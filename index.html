@@ -327,6 +327,51 @@
     let currentRows = [];
     const DAY_ORDER = { 'Day 1 (12th)': 1, 'Day 2 (13th)': 2 };
 
+    // IDs to move: swap these IT rows (from Day 2 morning) into Day 1 by swapping with non-AIDS, non-IT teams
+    const IT_MOVE_IDS = [
+      'IT007','IT008','IT009','IT010','IT011','IT012','IT013','IT014','IT015',
+      'IT016','IT017','IT018','IT019','IT020','IT021','IT022','IT023','IT024','IT025'
+    ];
+
+    function sortChrono(a, b) {
+      return (DAY_ORDER[a.day] - DAY_ORDER[b.day]) ||
+             (a.startMin - b.startMin) ||
+             a.venue.localeCompare(b.venue) ||
+             a.id.localeCompare(b.id);
+    }
+
+    // Swap IT ids from Day 2 to Day 1 by exchanging schedule slots with non-AIDS, non-IT rows on Day 1
+    function applyCustomAdjustments(rows) {
+      const usedTargets = new Set();
+      for (const itId of IT_MOVE_IDS) {
+        const iIdx = rows.findIndex(r => r.id === itId && r.day === 'Day 2 (13th)');
+        if (iIdx === -1) continue; // not found or already moved
+        const itRow = rows[iIdx];
+
+        // Prefer same venue on Day 1, otherwise any venue
+        let tIdx = rows.findIndex((r, idx) =>
+          r.day === 'Day 1 (12th)' && r.dept !== 'AIDS' && r.dept !== 'IT' && r.id !== '—' &&
+          r.venue === itRow.venue && !usedTargets.has(idx)
+        );
+        if (tIdx === -1) {
+          tIdx = rows.findIndex((r, idx) =>
+            r.day === 'Day 1 (12th)' && r.dept !== 'AIDS' && r.dept !== 'IT' && r.id !== '—' &&
+            !usedTargets.has(idx)
+          );
+        }
+        if (tIdx === -1) continue; // no available target
+
+        const tRow = rows[tIdx];
+        usedTargets.add(tIdx);
+
+        // Swap schedule fields (keep teams intact)
+        const tmpDay = itRow.day;     itRow.day = tRow.day;     tRow.day = tmpDay;
+        const tmpStart = itRow.startMin; itRow.startMin = tRow.startMin; tRow.startMin = tmpStart;
+        const tmpEnd = itRow.endMin;     itRow.endMin = tRow.endMin;     tRow.endMin = tmpEnd;
+        const tmpVenue = itRow.venue;    itRow.venue = tRow.venue;       tRow.venue = tmpVenue;
+      }
+    }
+
     function renderRows(rows) {
       const tbody = document.querySelector('#schedule tbody');
       tbody.innerHTML = '';
@@ -819,6 +864,13 @@
           }
         }
       }
+
+      // Apply requested swaps (move selected IT rows to Day 1 by swapping with non-AIDS, non-IT rows)
+      applyCustomAdjustments(rows);
+
+      // Ensure chronological order becomes the new original order
+      rows.sort(sortChrono);
+      rows.forEach((r, idx) => { r.originalIndex = idx; });
 
       originalRows = rows;
       currentRows = [...rows];
