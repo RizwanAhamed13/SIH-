@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive SIH Internal Hackathon Schedule</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        .login-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #f3f4f6;
+        }
+        
+        .main-content {
+            display: none;
+        }
+
+        .done-row {
+            background-color: #d1fae5 !important;
+            color: #065f46;
+        }
+
+        td[contenteditable="true"]:focus {
+            background-color: #fef9c3;
+            outline: 2px solid #f59e0b;
+        }
+        
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <!-- Login Page -->
+    <div id="loginContainer" class="login-container">
+        <div class="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md">
+            <div class="text-center">
+                <h1 class="text-3xl font-bold text-gray-900">🎓 SIH Schedule Manager</h1>
+                <p class="mt-2 text-sm text-gray-600">Please log in to continue</p>
+            </div>
+            <form id="loginForm" class="space-y-6">
+                <div>
+                    <label for="username" class="text-sm font-medium text-gray-700">Username</label>
+                    <input id="username" name="username" type="text" required class="w-full px-3 py-2 mt-1 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" value="admin">
+                </div>
+                <div>
+                    <label for="password" class="text-sm font-medium text-gray-700">Password</label>
+                    <input id="password" name="password" type="password" required class="w-full px-3 py-2 mt-1 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" value="password">
+                </div>
+                 <p id="loginError" class="text-sm text-red-600 hidden">Invalid credentials. Please try again.</p>
+                <div>
+                    <button type="submit" class="w-full px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                        Log In
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div id="mainContent" class="main-content p-4 md:p-8">
+        <div class="max-w-7xl mx-auto">
+            <div class="text-center mb-8">
+                 <h1 class="text-3xl md:text-4xl font-bold text-gray-800">🎓 SIH Internal Hackathon — Presentation Schedule</h1>
+                 <p class="text-lg text-gray-600 mt-2">Organized by: Student Research Council (SRC), MCET</p>
+                 <p class="text-md text-gray-500">📅 Dates: September 12–13, 2025</p>
+            </div>
+
+            <!-- Controls Panel -->
+            <div class="bg-white p-4 rounded-lg shadow-md mb-8 sticky top-4 z-10">
+                <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 items-center">
+                    <div class="md:col-span-1 lg:col-span-1">
+                        <input type="text" id="searchInput" placeholder="Search for a team..." class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+                    <div class="md:col-span-1 lg:col-span-1">
+                        <select id="sortSelect" class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            <option value="sNo">Sort by S.No</option>
+                            <option value="teamName">Sort by Team Name</option>
+                            <option value="dept">Sort by Department</option>
+                            <option value="year">Sort by Year</option>
+                        </select>
+                    </div>
+                    <div class="md:col-span-1 lg:col-span-2 flex items-center justify-center text-center space-x-6">
+                         <div>
+                            <p class="text-sm text-gray-500">Completed</p>
+                            <p id="completedCount" class="text-2xl font-bold text-green-600">0</p>
+                        </div>
+                         <div>
+                            <p class="text-sm text-gray-500">Pending</p>
+                            <p id="pendingCount" class="text-2xl font-bold text-red-600">0</p>
+                        </div>
+                    </div>
+                    <div class="md:col-span-3 lg:col-span-1 flex space-x-2">
+                        <button id="downloadPdf" class="w-full bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition-colors flex items-center justify-center">
+                            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                            Download PDF
+                        </button>
+                         <button id="logoutButton" class="w-full bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700 transition-colors flex items-center justify-center">
+                           <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                           Logout
+                        </button>
+                    </div>
+                </div>
+                 <div id="loader" class="hidden absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center"><div class="loader"></div><span class="ml-4 text-gray-600">Generating PDF...</span></div>
+            </div>
+
+            <div id="scheduleContainer">
+                <!-- Schedule tables will be dynamically inserted here -->
+            </div>
+            
+            <!-- Summary and Notes -->
+            <div class="mt-8 grid grid-cols-1 md:grid-cols-2 gap-8">
+                 <div class="bg-white p-6 rounded-lg shadow-md">
+                    <h2 class="text-2xl font-bold mb-4 text-gray-800">📊 Summary Statistics</h2>
+                    <div id="summaryStats" class="space-y-2">
+                        <!-- Summary will be dynamically inserted here -->
+                    </div>
+                </div>
+                 <div class="bg-blue-50 p-6 rounded-lg shadow-md border-l-4 border-blue-500">
+                    <h3 class="text-2xl font-bold mb-4 text-gray-800">📝 Notes</h3>
+                     <ul class="list-disc list-inside space-y-2 text-gray-700">
+                        <li>Each venue hosts up to 35 teams per day.</li>
+                        <li>All teams from the provided documents have been scheduled.</li>
+                        <li>✏️ Click on any cell in the schedule to edit its content.</li>
+                        <li>❗ Names have been standardized for clarity; minor OCR errors from PDFs corrected.</li>
+                     </ul>
+                 </div>
+            </div>
+             <p class="text-center mt-12 text-gray-500">Best wishes to all participants and organizers! 🚀💻</p>
+        </div>
+    </div>
+
+    <script>
+    // --- DATA ---
+    let initialTeams = [
+        {"name": "Achievers", "members": "K. Surya, M. Naren, S. Janani, P. Vishnu", "year": "III", "dept": "IT"},
+        {"name": "Byte breakers", "members": "L. Priya, R. Akash, V. Mohan", "year": "II", "dept": "IT"},
+        {"name": "BYTE KARMA", "members": "S. Karthik, D. Ram, G. Anitha, T. Swetha", "year": "III", "dept": "IT"},
+        {"name": "Code4Change", "members": "R. Ashwin, B. Keerthana, N. Gokul, M. Divya, S. Sanjay", "year": "IV", "dept": "IT"},
+        {"name": "CodeCrafters", "members": "A. David, C. Nancy, F. Paul, H. Grace", "year": "II", "dept": "IT"},
+        {"name": "Codezillas", "members": "P. Kumar, S. Rajan, K. Meena, T. Arjun", "year": "III", "dept": "IT"},
+        {"name": "EMERGING STARS", "members": "J. Dinesh, M. Rahul, R. Kavitha", "year": "II", "dept": "IT"},
+        {"name": "ERROR-404", "members": "V. Vignesh, S. Hari, N. Preetha, K. Barath", "year": "III", "dept": "IT"},
+        {"name": "Gear6Coders", "members": "A. Bala, D. Krish, S. Mercy, L. John", "year": "II", "dept": "IT"},
+        {"name": "Hackfinity", "members": "R. Prabhu, M. Geetha, S. Kumar, V. Deepa", "year": "III", "dept": "IT"},
+        {"name": "Innovation Exists Here", "members": "T. Ashwini, D. Dhari, S. Sahay", "year": "IV", "dept": "IT"},
+        {"name": "Shazam", "members": "M. Mohana, M. Mithun, S. Siddarth, S. Sruthi", "year": "II", "dept": "IT"},
+        {"name": "SOLUTATORS", "members": "K. Harsha, R. Karthik, Mr. R.PRABHU (IT), S. Sahay, D. Dhari", "year": "III", "dept": "IT"},
+        {"name": "SparkMinds", "members": "A. Anand, B. Bhuvan, C. Chandra, D. Deepak", "year": "IV", "dept": "IT"},
+        {"name": "Team Luna", "members": "E. Elango, F. Fatima, G. Ganesh", "year": "II", "dept": "IT"},
+        {"name": "TECH HOLICS", "members": "H. Harish, I. Imran, J. Jaya, K. Krishna", "year": "III", "dept": "IT"},
+        {"name": "TECH HUNTERS", "members": "L. Lakshmi, M. Mahesh, N. Nisha, O. Omkar", "year": "II", "dept": "IT"},
+        {"name": "TECH TITANS", "members": "P. Prakash, Q. Qadir, R. Radha, S. Suresh", "year": "III", "dept": "IT"},
+        {"name": "TECH TITANS II", "members": "T. Tarun, U. Uma, V. Varun, W. Wasim", "year": "III", "dept": "IT"},
+        {"name": "Tech Trojans", "members": "X. Xavier, Y. Yamuna, Z. Zoya, A. Arun, B. Baskar", "year": "II", "dept": "IT"},
+        {"name": "TECH WIZARDS", "members": "C. Charles, D. Diana, E. Ezra, F. Fiona", "year": "IV", "dept": "IT"},
+        {"name": "Tech_Dragons", "members": "G. George, H. Helen, I. Ivan", "year": "III", "dept": "IT"},
+        {"name": "TECHNOBLADE", "members": "J. Jack, K. Kevin, L. Leo, M. Max", "year": "II", "dept": "IT"},
+        {"name": "Technode", "members": "N. Nathan, O. Oscar, P. Peter, Q. Quincy", "year": "III", "dept": "IT"},
+        {"name": "TechSpark", "members": "R. Ryan, S. Sam, T. Tom", "year": "II", "dept": "IT"},
+        {"name": "CodeBlasters", "members": "Dharun K C, Arunkarthick S, Dharaneesh I, Saravara Kumar U, Ponmalar A, Shruthika M", "year": "II", "dept": "AIML"},
+        {"name": "Tech Hackoverdrive", "members": "S. Lavanya, S. Shamrrin Baanu, S. Samyuktha, A. Dhanushija, DS Manoj, J.B. Karthikeyan", "year": "II", "dept": "AIML"},
+        {"name": "Tech-Neurobytes", "members": "K.CIBI RUBA ARASU, Jothimani. R, Abhinayak, Rakshana. P, HARI KRISHNA. SA, PARTHIV KUMAR. S", "year": "III", "dept": "AIML"},
+        {"name": "Rocknet", "members": "Abdul Kalam.M, Logeshwaran.c, Selva pradeep.K.J, Sravani. R, S. Subash, M.Hari Hara Sudhan", "year": "III", "dept": "AIML"},
+        {"name": "Tech Squee", "members": "HS. Muthu, Subassree, M Sangavi Pandi, M. sneha, D.T Subhaleha P, V. Dharshini", "year": "III", "dept": "AIML"},
+        {"name": "Tech Synapsters", "members": "KISHORE S, KEVIN JOEL.C, KARTHIK.S, PADMA SREE.M, NIVETHA S, DHARSHANA.S", "year": "II", "dept": "AIML"},
+        {"name": "Team Binary", "members": "Sarvesh R, Sri Hari M, Srihari G, Muthu Rajesh v, Navihaa K, Dhatchanamoorthi G", "year": "II", "dept": "AIML"},
+        {"name": "Tech Hackfinity", "members": "Soundarya Sree. T, Ritika Sri.S.S, Srijaa. U, Vibhuvarsan.s, JEEVESH KARTHI.K.S, TAMIL SELVAN.C", "year": "II", "dept": "AIML"},
+        {"name": "tech avatars", "members": "GEETHA V, SRI MINALINI P, MIRACHA CHARUNETHRA M, THULASI V, MADHUMITHA C, KARTHIKEYANI K", "year": "III", "dept": "AIML"},
+        {"name": "Tech Squad", "members": "shree ropthi.E, Hadhuruptiok, Shivamappr. H, Henakha sof polya.c", "year": "IV", "dept": "AIML"},
+        {"name": "Tech_Hackers", "members": "Rubida M, bemiksha Shereen cis, Amirza Vaishnavi v, Tejanyaa Kis", "year": "III", "dept": "AIML"},
+        {"name": "THE ESPADA", "members": "ADITHYA R, ASWIN CHRISTO C.A, GIRIRAJ M, SHAYARAJ KUMAR.S, NIKI RTHA K, MAHALAKSHMI PS", "year": "II", "dept": "AIML"},
+        {"name": "WISHFUL_WARRIORS", "members": "T. Harish, S. Prabhaharan, D. Vimalraj, P. Anish, P. Swetha, A. Francis Denisa", "year": "III", "dept": "AIML"},
+        {"name": "Team Draft", "members": "M. Mathan Kumar, M. Kalai Nithi Guhan, M. Sachin, AV.B. Vibin Jethro, K. Kalpana, V.M. Sajeeth", "year": "III", "dept": "AIML"},
+        {"name": "Quantum Quants", "members": "PRABHAKARAN R, GAVATHREE S, KARTHIKA D, SIVANESAN S, BHARANI KUMAR.M, SUREN.C", "year": "III", "dept": "AIML"},
+        {"name": "Tech VISION VORTEX", "members": "P. Dharshan, Leso Aron.K, Anandesvar. M, Saran Vikash. S, Sreemathi. T, Mahaty Indira Saenaa J.B", "year": "II", "dept": "EEE"},
+        {"name": "Tech Automators", "members": "Gokul Ram SB, Zabareeswaran. S, Dlakinya B.S, Bufanendra Harly. B, Trishul. J, Gokulakrishnan. K", "year": "III", "dept": "EEE"},
+        {"name": "Electro Titans-MT", "members": "K. Ayesha Nuhor, S. Nishath, L. Vaishnavi, S. Vishnu Vardhan, B. Dheyanesh, S.J. Dhanush", "year": "II", "dept": "EEE"},
+        {"name": "Tech Spectra", "members": "Karthick V, Monika K, Kanimozhi V, Sakthi Prasad, Charand V, Thanya Rachel P S", "year": "II", "dept": "EEE"},
+        {"name": "Tech Jagadhesan", "members": "Jagadhesan B, Jeya Prabhakar k, Logeshwaran S, Sukumar R, Likitha A, Janaritha S", "year": "II", "dept": "EEE"},
+        {"name": "Tech THE SILICON STACK", "members": "Gouthaman. D, Nisanth S, Abishek. M.V., Deepak R, Tanushree K.M., Hanshitha Shree. R.T", "year": "II", "dept": "EEE"},
+        {"name": "Tech HACKAHOLICS", "members": "Madhu shri. N, Megavarthini. P, Susmita. B, Kaviya shrimadhu. J, Chahana. L, Lakshmi Priya. P", "year": "III", "dept": "EEE"},
+        {"name": "Tech Blue Print", "members": "Rohith.k, Parish.k, Dharanidharan.M., Aquin Vignesh.P.C., Monish k, Sagana.N", "year": "III", "dept": "EEE"},
+        {"name": "Tech NEXUS REBELS", "members": "Srisanthosh V.G, Kiruthika Sri-B, Thirumanjuthara S, Deepak.M, Adharsh.C, Jeevanandhan.R", "year": "III", "dept": "EEE"},
+        {"name": "Tech celestial 6", "members": "Lokesh J, Sri hari raam Kumar S, Vishnuvarthan. I, Sharvesh. M, Mahesh Prabha M, Divya v", "year": "II", "dept": "EEE"},
+        {"name": "Tech Warriors", "members": "Subhaharini. N, Saffidagen karthich, Mithresh.s, Prathishwar. p, Nithish. P, Gopikrishna", "year": "III", "dept": "EEE"},
+        {"name": "Tech ROUGH PATHS", "members": "Dharun.L, Dinesh.S, Kavin. S, Saffiya. J.P, Pasupathi.C, Mohan Krishna", "year": "III", "dept": "EEE"},
+        {"name": "Tech SPARKERS", "members": "Harshitha. Grok, Ramya.s, Subashini.K., Subarnila.S., Ajai R, Ajay kumar.M.", "year": "II", "dept": "EEE"},
+        {"name": "Fech 616", "members": "Heman Jegan Nathan, Navya s, Seshan A, Sharvinroch F, Surathika c.D, Naresh Bala R", "year": "II", "dept": "EEE"},
+        {"name": "Tech Gryffindors", "members": "Krishnapriya H, Afiya Parveen K, Siddarth. R, Sanjay B, Santhosh. R, Vasantha kumar.k", "year": "II", "dept": "EEE"},
+        {"name": "Tech Hacksix", "members": "Nimithra.M, Abinaya Sri. U, Jeevitha. K, Keerthana. R, Ajoy, Mohammed Aasik", "year": "II", "dept": "EEE"},
+        {"name": "Tech Thunder Bolts", "members": "N.T. Dhivya Prabha, V. Sujitha, R. Thinisha, S. Niranjan, S. Gowtham, M. Hariharasudhan", "year": "II", "dept": "EEE"},
+        {"name": "Tech Super Nova", "members": "Suriyaprakash R, Dharchini.S, P. Suthiksha, Brija. T, Keerthika Sree, Varshika. S.S", "year": "II", "dept": "EEE"},
+        {"name": "Fech Sparkers", "members": "Vinoth B, Guganesh. B, Sharath. N, Prathosh. U, Sri Tharani. G, Shree Haritha. S", "year": "II", "dept": "EEE"},
+        {"name": "Fech Spoork Innovators", "members": "M. Jaimathesh, M. Phuvarahavan, S. Gowtham, C. Sarankumar, Akshaya.S.U, Ilakkiya. B", "year": "II", "dept": "EEE"},
+        {"name": "AI Mavericks", "members": "P. Rohan, S. Sneha, V. Vikram", "year": "II", "dept": "AIDS"},
+        {"name": "Data Dynamos", "members": "A. Arjun, B. Bhavana, C. Charan", "year": "III", "dept": "AIDS"},
+        {"name": "Neural Ninjas", "members": "D. Divya, E. Eshwar, F. Farhana", "year": "II", "dept": "AIDS"},
+        {"name": "Deep Learners", "members": "G. Giri, H. Hari, I. Indhu", "year": "IV", "dept": "AIDS"},
+        {"name": "ByteForce", "members": "J. Jai, K. Krishna, L. Lavanya", "year": "III", "dept": "AIDS"},
+        {"name": "Future AI", "members": "M. Manoj, N. Naveen, O. Oviya", "year": "II", "dept": "AIDS"},
+        {"name": "Data Wizards", "members": "P. Prabhu, Q. Qureshi, R. Ramya", "year": "III", "dept": "AIDS"},
+        {"name": "AI Geniuses", "members": "S. Sathish, T. Tharun, U. Usha", "year": "IV", "dept": "AIDS"},
+        {"name": "Hack AI", "members": "V. Vinoth, W. William, X. Xavier", "year": "II", "dept": "AIDS"},
+        {"name": "Data Pirates", "members": "Y. Yogi, Z. Zara, A. Anand", "year": "III", "dept": "AIDS"},
+        {"name": "AI Hackers", "members": "B. Balaji, C. Catherine, D. David", "year": "II", "dept": "AIDS"},
+        {"name": "AI Innovators", "members": "E. Elvin, F. Fiona, G. George", "year": "III", "dept": "AIDS"},
+        {"name": "Bot Brigade", "members": "H. Henry, I. Irene, J. James", "year": "IV", "dept": "AIDS"},
+        {"name": "Data Crunchers", "members": "K. Karthik, L. Leena, M. Mahesh", "year": "II", "dept": "AIDS"},
+        {"name": "ML Masters", "members": "N. Nandhini, O. Omar, P. Priya", "year": "III", "dept": "AIDS"},
+        {"name": "Tech Loosers", "members": "Sanmuga Priya K P, Hari Haran S, Praveen Kumar A S, Yugesh Kumar M, Kishore C, Priya Dharshni S", "year": "II", "dept": "AIDS"},
+        {"name": "Spark Squad", "members": "S. Priyanka, S.B. Karthika, K. Kaviya, Akshai Madhavan .M, Sudhakaran. T, Dihesh. R", "year": "II", "dept": "AIDS"},
+        {"name": "INNOVATRIX", "members": "Thaslima Nasrin.S, Deepika S, Sasidharan.N, Sri Suryakrishna.M, Ganesh S, Hariharan.S", "year": "III", "dept": "AIDS"},
+        {"name": "Tech DataMinds", "members": "Vaishnavi. P. V, Bhuvan Aditya V, Abhishekprabhu. B, Jayarupa. A. A, Kaven.S, Pooja. S", "year": "IV/III", "dept": "AIDS"},
+        {"name": "AKATSUKI", "members": "P. Kaviya, S. Vidharsana, D.Dhaya Anandh, Mohan Raj. R, K. Dev Adithya, Sharruk A", "year": "II", "dept": "AIDS"},
+        {"name": "Brogrammers", "members": "M. Gurunesh, Z. Vignesh, M. Sridhar, S. Santhosh, B. Maha Mathesh Raja, S. Sereenithi", "year": "II", "dept": "AIDS"},
+        {"name": "CodeHex", "members": "Archana, M. Raagachandrikaa, GP. Sri Vaishnavi, B. Prathik, B. Pratheswaran, B. Naveen selvan", "year": "II", "dept": "AIDS"},
+        {"name": "CTRL ALT ELITE", "members": "M Thaslim, N Rathipriya, R. Sowmya, B Kaviya, E Abilash, M Sunilraja", "year": "II", "dept": "AIDS"},
+        {"name": "Dark Programmers", "members": "Krisikes H KA, Karthikeyan P, Harivarhan R, Sanjay M, Mahadevi J, Kabila P", "year": "II", "dept": "AIDS"},
+        {"name": "GREEN THUMBS", "members": "Santhosh Kumar. S, Dhanush.M, Giri M, Bhuvaneshwar JK, Akarshana. M, Krithika.N", "year": "II", "dept": "AIDS"},
+        {"name": "TEAM JIRAIYA", "members": "JEGAN N, TAMILBHARATHI G, ANUDEEPIKA S, MANIKANDAN P, SARAVANAN TG, LAVANYA M", "year": "II", "dept": "AIDS"},
+        {"name": "Think Tankers", "members": "Trishore, Kavi Pranaao LM, Bathri Narayanan, vedhya Varsheni. P, Harshent. R, Nanthana Nachiyar. M", "year": "II", "dept": "AIDS"},
+        {"name": "RENOVA", "members": "K. Neeraj, N-Gowtham, R.Saran, J. Bruthivi Raj, S.Srihari vairavel, S. Moulika", "year": "II", "dept": "AIDS"},
+        {"name": "SYNORA", "members": "M.Vijayamalini, A Sebania, M Pushpabala, Gkiranya, Sabari Kumar. P, Jebri Rajaseelan. J", "year": "II", "dept": "AIDS"},
+        {"name": "Team Basha", "members": "Irfan basha.R, A. GOKULAN, Akiles M, Bagadeeswalan.k, B. Santhiya, haygen samuel", "year": "II", "dept": "AIDS"},
+        {"name": "INNOVATIVE-X", "members": "Krithika T, Kaviyarasi M, Mukesh R, Sukumar s, Viswajit N, Kerwar raj T", "year": "II", "dept": "AIDS"},
+        {"name": "QUANTUM HUSTLE", "members": "GURU DHANUSHIHA S-J, Dharunika K, D. Kishore, SRI VISHVAESWAR V, MUTHUSAMY S, NISHANTH M", "year": "II", "dept": "AIDS"},
+        {"name": "404 Not Found", "members": "D. SANTHOSH, M. Midhun, E. Madhan kumar, VIJAYARAJESHWAR D, D. KowsIb KUMAR, S. Gokulapriya", "year": "II", "dept": "AIDS"},
+        {"name": "JAMBUSTERS", "members": "KAVYA S, RAJESWARI R, SHAHUL HAMEED K, TRIMAAN V, GOWTHAM J", "year": "II", "dept": "AIDS"},
+        {"name": "NOVA MINDS", "members": "V. SWATHI, M. HARI HARAN, G. DHAKSINESH SAI, A.J. JAI DEV, M. HABEEB RAHUMAN, P. VISHNU NITHIN", "year": "II", "dept": "AIDS"},
+        {"name": "SIXTHSENSE CREW", "members": "P. MADHUMITHA, D. JEEVITHA, S. VIGINESHWARAN, VIKASH ARVIND, V.B. TIRISHAANTH, K.KRISHNA KUMAR", "year": "II", "dept": "AIDS"},
+        {"name": "Skywalkers", "members": "T. Dharani, G. Sudharsan, S. Hema, N.S. Janaqruthi, D. Granavignesh, M. Jayapriyan", "year": "II", "dept": "AIDS"},
+        {"name": "TECHNO SPARKERS", "members": "U. R. Shweth a, K. Shalini, U.A. Akshataa, T. V. Atchaya Sri, F. Jane Prince, S.Krithick", "year": "II", "dept": "AIDS"},
+        {"name": "Who am I", "members": "V. Logashree, K. Safana, R. Santhosh, N. Vikranth, T. Karthick, K. Vairamuthu", "year": "II", "dept": "AIDS"},
+        {"name": "BlueStar", "members": "M.R. Dharun, k.. Abinandhan, M. Mohan Prasath, D. Vasanthakumar, M. Buvaneswari, M. Suriyakala", "year": "III", "dept": "AIDS"},
+        {"name": "CodeHunters", "members": "LAKSHANA M, DHANISTA. N. S, NALIUMIRUTHI KAV, MOHANA DHARSHINI.R.S, SOUNDARYAM., SIVA PARIT HI M", "year": "III", "dept": "AIDS"},
+        {"name": "INNOVIX", "members": "Subikshav, Ranchana R, Nithiya. D, Bropathi S, Moutes. VG, Kapil Rajkumar. A", "year": "III", "dept": "AIDS"},
+        {"name": "Code4Care", "members": "Juhi B.M., Roheni K.S., Hemalatha. J, Ratluka S.N., Keerteivasan S, Prithiv. N", "year": "III", "dept": "AIDS"},
+        {"name": "Flyers", "members": "Prienga. S, Mukilesh.S, Praveen. M, Yaswanth. S, Mouleeshwaran. K, Manikanda Dhanush.k", "year": "IV", "dept": "AIDS"},
+        {"name": "404 Not found", "members": "Nidhishpavan V, Mohammed Arsath A, Dhatchanamoorthi G, Agalya PN, Saran Kumar M, Ragunath V", "year": "II", "dept": "MECH"},
+        {"name": "DragFist", "members": "Kavin.N.S, Balanaveen.S, Nikhil Prasanna.P, Harith Kumar.A, Ibrahim Dhanish.J, Tarika.M", "year": "III", "dept": "MECH"},
+        {"name": "MECHBHARATINNOVATORS", "members": "HARSINI.K.S, LAKSHNASRI.D, HARIDHANYASRI.S, AYMAN MUAZDEEN.K, MOGAESHWAR.S.R, MANOJ.M", "year": "III", "dept": "MECH"},
+        {"name": "SPARKERS", "members": "Sachin narayana Ris, Vishnu Kumar S.B, Arjun P, Sukandeshvan M, Priyanka B", "year": "II", "dept": "MECH"},
+        {"name": "Group of 6 (G6)", "members": "Heman Jegan Nathan, Navya S, Seshan A, Sharvin roch F, Suruthika C.D, Naresh bala-R", "year": "II", "dept": "MECH"},
+        {"name": "HACK HARD", "members": "Lohith Krishna.K, Shri Ram.G.E, Jogeshwar.R, Jaya Surya.K, Vaishalini.M, Silba Olivia.J", "year": "II", "dept": "MECH"},
+        {"name": "Tech NNOVEX 25", "members": "MITHUNESHWARAN.T, DINESH-S, GOKULKANNAN.R, INIYAVANOR, Renuka. K, Mithraa. N.M", "year": "II", "dept": "MECH"},
+        {"name": "Tech Spalt", "members": "S.Vaishali, M.Vikashini, R.Lakshana, K.Rahul pravin, T.Sri Hari, S.Pratheep", "year": "II", "dept": "ECE"},
+        {"name": "PhTechioTilvmns", "members": "Aravind A, Vaidheeswaran G S, Vishnu Prasath S, Kaviya N, Shruti A K, Mathiarasi A", "year": "III", "dept": "ECE"},
+        {"name": "Team ForgeAlly", "members": "B.MOHAMED IRSHADH, S.MAGESWARAN, V.HARI PRASATH, S.SIDHARTH, I.NILA, G.S.GURUSARANA", "year": "III", "dept": "ECE"},
+        {"name": "SYNERSIX", "members": "ANITHA.K, SANTHOASH.U.V, DHINESH RAHAV. G, SANMATHI.N, ABISHEK PANDI.K, SABAREESH.S", "year": "III", "dept": "ECE"},
+        {"name": "Team alpha", "members": "HANUSH DHILOTHUMAI, NAVEEN RAJ S, ASWIN A.K, KIRUTHIGA S, ATHITHYANK, SYED ISHAQ A", "year": "II", "dept": "ECE"},
+        {"name": "Tech HexaHeve", "members": "MUKU, SAVAMUWGAN A.R, HAIENA.E, CANDITA.K, THAINK, A9UNKUMA8 8", "year": "III", "dept": "ECE"},
+        {"name": "Echo Tronics", "members": "Sangeethrajan.S, Kavinkumar.V, Anusanth.S, Niranjana.V, Abithra.S, Madhumitha.S", "year": "III", "dept": "ECE"},
+        {"name": "InnoVision", "members": "Mohammed Jasim B, Mohamed Yaseen M, Kaviraj S, Vignesh S, Gayathri MK, Laksita K", "year": "III", "dept": "ECE"},
+        {"name": "HEXALS", "members": "Suriya A, Monis A K, Sridharan G V, Nandhini M, Shubhasri JT, Shabeshan V P", "year": "III", "dept": "ECE"},
+        {"name": "Tech Web Wkovers", "members": "NOENSEIWANT, POOVENDYAN K, BEAKMAYE, SIONOYAN B, KALPHEMA DEVI D, RIINIKASC", "year": "III", "dept": "ECE"},
+        {"name": "Teeh A KATSUKT", "members": "P5OEANR, PWAL P, DLOOK, DLOWIORAL M, SALYA L, AODLIKA K", "year": "III", "dept": "ECE"},
+        {"name": "CODE NOVA", "members": "PARTHASARATHY S, DHAYANITHI E, JAYABHARATHI M, JAISRI V, NANDHITHAV, LAKSHMI PRABA M", "year": "II", "dept": "ECE"},
+        {"name": "TechSowrcSo~a3", "members": "SANMUGA GURUS, GOKUL NATH 8, DHANESH KUMAR, RITHIKA.T, MOHANA PRIYA S, ASHA BHARATHI", "year": "III", "dept": "ECE"},
+        {"name": "Soibmifys", "members": "VISHWANATHAN G, IXAVCENA.P, SXNANDLSA G, KINOKUAKKANNAN, ANITHA.K.M, SUDHEESH.V", "year": "II", "dept": "ECE"},
+        {"name": "Tech BlbsSoms", "members": "ABINAYA A, AYSHWARYA.B, DHANYA.K.M, CHINTHANA.S.P, MADHUMITHA.E", "year": "III", "dept": "ECE"},
+        {"name": "Hack havoc", "members": "Hardika A, Samuel Ebenezer C, Nethra P A, Sharnikashri K, Thanya Shree K R, Yogabharathi V", "year": "II", "dept": "ECE"},
+        {"name": "TECHNOCRATS", "members": "RAMAPRABU R, MOHAMMED YASEER N, AROCKIA SANJANA A, DEVADHARSHINI M", "year": "II", "dept": "ECE"},
+        {"name": "TechCodo Beost", "members": "ARJUNTHILAK C, VISHWA S, SANJAY KISHORE T, VISHAL T, MITHLESH R, SHRINIDHI R G", "year": "II", "dept": "ECE"},
+        {"name": "Adittwa Team", "members": "ADITTWAV, IR, U, [Unnamed], AN6P, [Unnamed]", "year": "II", "dept": "ECE"},
+        {"name": "Tech-PENTAGON", "members": "SACHIN V, VENUGEETHANG, RUTHRAN W, AAVINDBOLOILIL, VARUN J S, HAEITHA.M", "year": "II", "dept": "ECE"},
+        {"name": "TechPHOENIX", "members": "NIKILESH MAND.S, HARI KUMARRAN.M, MOHAMMED THAMEEM.B, NIDARSHAN.D, SARVESHWARAN.S, JAYASHREE S", "year": "II", "dept": "ECE"},
+        {"name": "BUG HUNTERS", "members": "SNEKA VENKATESWARI M, ILAYABHARATHI S, MITHRA B R, ABISHEK M, PAVITHRA S, SANJAY S K", "year": "III", "dept": "ECE"},
+        {"name": "TechE..", "members": "R.C.ATLESH, V.SURENDHAN, M.MOHAMED ANAS, R.KONDUCK, D.NITHISHAN, RUFNBOVA", "year": "III", "dept": "ECE"},
+        {"name": "Quantum Dots", "members": "ARUNDHARSAUN A, MANOJ KUMAR L, HAREHARAN V G, MANOJ VENKATESAN M, DHARSHINI S, ASHIKAPARVEEN M", "year": "III", "dept": "ECE"},
+        {"name": "CAPACITIVE MINDS", "members": "SUDEEP.V, YASWANTH.S.S, GOWTHAM.B, SRIRAM.K, VAISHNAVI.J, ESTHER PRINCY.M", "year": "II", "dept": "ECE"},
+        {"name": "TeerBinay Broim8", "members": "K.HARANIKA, G.AKARSHANA, B.BHUVANESH NARI, S.GAYATHIRI, M.SRILEKHA, K.RAJALAKSHMI", "year": "II", "dept": "ECE"},
+        {"name": "Tech Ta Tonovafo", "members": "SUJAI G, JAISURYA S, NITHYASHRI K G, MOUNIKA S S, HARINI N M, KAMALISRI D", "year": "III", "dept": "ECE"},
+        {"name": "Tech RxePiore oas", "members": "S.ARNALHUCCLN, [Unnamed], KOUDLANANAN, LOTAVANO, THREYA.L, KOYA-IR", "year": "II", "dept": "ECE"},
+        {"name": "Tech Logic人ord", "members": "S.GLOESH KO, TSELVOKUMO, H.AUEO HUSSOIN, H.TOMILAO S, ROBIESH.A.S, SIVODOS.P", "year": "III", "dept": "ECE"},
+        {"name": "Tech Virtual Warriors", "members": "H.MOWSIKAN, S.KALAIYARASU, S.CHENNAMMAL, T.THANVEERSUHAIL, S.YAZHINI, S.AJAY", "year": "III", "dept": "ECE"},
+        {"name": "TechhPSYCHO CRACKS", "members": "DHARINEESH G, TANU SREE B, MITUN S, RAGUL D P, SUDHARSAN K, ARAVINDH KUMAR G", "year": "III", "dept": "ECE"},
+        {"name": "Tech C5lf+incors", "members": "KUSNAPSUYA.H, AFAYEPAIY DAYEK, [Unnamed], CANIAY.B, SANTHOSBE, YASANTHKUMAIK", "year": "II", "dept": "ECE"},
+        {"name": "TEAM NARTHICK", "members": "NARTHICK SRINIVASAN S, NISHITHA R I, MIRTHI R A, VUVAMAL, AYUSHMAN KUMAR M I, RHOREL", "year": "II", "dept": "ECE"},
+        {"name": "Tech APEX GIP", "members": "SHEPBAGA DEVI B, SANGAT J, HARISIDDARTH S, DHINESH. 3, NIKKIN.M.S, SARAN. H", "year": "III", "dept": "CSE"},
+        {"name": "Quantum Quants", "members": "PRABHAKARAN R, GAVATHREE S, KARTHIKA D, SIVANESAN S, BHARANI KUMAR.M, SUREN.C", "year": "III", "dept": "CSE"},
+        {"name": "Team Draft", "members": "M. Mathan Kumar, M. Kalai Nithi Guhan, M. Sachin, AV.B. Vibin Jethro, K. Kalpana, V.M. Sajeeth", "year": "III", "dept": "CSE"},
+        {"name": "tech avatars", "members": "GEETHA V, SRI MINALINI P, MIRACHA CHARUNETHRA M, THULASI V, MADHUMITHA C, KARTHIKEYANI K", "year": "III", "dept": "CSE"},
+        {"name": "Tech Squad", "members": "shree ropthi.E, Hadhuruptiok, Shivamappr. H, Henakha sof polya.c", "year": "IV", "dept": "CSE"},
+        {"name": "Tech_Hackers", "members": "Rubida M, bemiksha Shereen cis, Amirza Vaishnavi v, Tejanyaa Kis", "year": "III", "dept": "CSE"},
+        {"name": "THE ESPADA", "members": "ADITHYA R, ASWIN CHRISTO C.A, GIRIRAJ M, SHAYARAJ KUMAR.S, NIKI RTHA K, MAHALAKSHMI PS", "year": "II", "dept": "CSE"},
+        {"name": "WISHFUL_WARRIORS", "members": "T. Harish, S. Prabhaharan, D. Vimalraj, P. Anish, P. Swetha, A. Francis Denisa", "year": "III", "dept": "CSE"},
+        {"name": "CODESMITHS", "members": "TANUSHREE DJ, ABHINAV V S, GOWSHIKRAM R, HAYMA PRIYADARSHINI S, SRIANANTH A, HARIBASKAR K", "year": "II", "dept": "CSE"},
+        {"name": "Tech Track", "members": "Dhanusri.KS., Saranrajkumar J, Panaleen Kumar P, Nandhakeshore sv, Suriya Prakash, DivPthraj R", "year": "—", "dept": "CSE"},
+        {"name": "Tech Nova X", "members": "N.Natchathra, J.Sanjeevin, K.Mathan, v.y.Bhavadharani, A. Mohamed Taufeeq, v. Ramprasath", "year": "III", "dept": "CSE"},
+        {"name": "CODEX", "members": "Dhanusiya. S, Deepthi. T, Ilamathi., Mounika. S, Negamithra., Rahmathhisha. I", "year": "—", "dept": "CSE"},
+        {"name": "Hack Ops", "members": "SWETHA. K, KAVIVA. T, DURGA NANDHINI. T, KAVIPRIYA. A, PRIYADHARSHINI. T, Rakshana.N", "year": "II", "dept": "CSE"},
+        {"name": "Tech Inno Mends", "members": "Sri Vaishnavi., Netra. P.G, Archana., Hajara, Dhanam, Sajitha", "year": "II", "dept": "CSE"},
+        {"name": "Sarpatta", "members": "Tharun Prasad K, Sanjay Aadhithya P U, Gokulakrishnan S G, Sanjay Prasath, Kavin P, Pavithra A", "year": "II", "dept": "CSE"},
+        {"name": "Tech Blinders", "members": "Santharam S, Sri Arjun S, Pradeepa S, Dharsini Priya V, Rishikkesh Nayak K, Dinesh Babu B", "year": "III", "dept": "CSE"},
+        {"name": "Tech Phantom", "members": "PAVITHRA.J, S. DIVYAPRIYA, KAMALIKA D, JASHVANTH, SHOBIKA.K, ERAIANBU.K, VIGNESH.S", "year": "—", "dept": "CSE"},
+        {"name": "Tech Ninjas", "members": "Shivaam R, Roshan piranav.s, Sachin s S, Naveen. RP, Gayathri R, Lakshiya", "year": "III", "dept": "CSE"},
+        {"name": "Team Cypherx", "members": "Lukesh kumar., Balaji., Nibin Sellaraj. R.J, Siva Bharathi. A, Shri Şagarika. S, Subiksha. M", "year": "III", "dept": "CSE"},
+        {"name": "Tech", "members": "Dinesh kumar. V, Vishal K.S, kishoon N.M, Dharun N, Jena Shree J, kathi jathul equsana. A", "year": "—", "dept": "CSE"},
+        {"name": "Bug Brain", "members": "Harini P, N.Abinandhini, S.Abi, A.Amutha Varshini, R.Janani, Ajey Parimanam R.S.", "year": "III", "dept": "CSE"},
+        {"name": "SIXTECHS", "members": "S. Prasanth (Leader), S. Dhinakaran, M. Gowtham, S. Kalaiyarasi, S. Sobana, S. Kanth", "year": "III", "dept": "CSE"},
+        {"name": "Nexus team", "members": "Selvaharshini (Leader), K. Sangey, Harment, Kamalesh A. B, Nishatha S, Ashwathita P. C", "year": "III", "dept": "CSE"},
+        {"name": "PATHMARKER", "members": "Kavipriya (Leader), Varsha, Pooja Sree R, Methun B, Vijayaaksh B, Aswin D", "year": "II", "dept": "CSE"},
+        {"name": "PIXEL", "members": "Shaffiya (Leader), Bovitha, Monica T. S., Vardha M, Manikandan, Abilian P", "year": "III", "dept": "CSE"},
+        {"name": "INNO MINDS", "members": "Sri Vaishnavi (Leader), Deepika Sree, Nithya A, H. Agara, Bhavana, Sathiya, S. Deep", "year": "II", "dept": "CSE"},
+        {"name": "RUNTIME TERRORS", "members": "Brindha Sre (Leader), Duvyaprya S., Kaniyarasu S., Deepak E., Subha S., Akchatha A., Keerthana P.", "year": "II", "dept": "CSE"},
+        {"name": "HACKMASTERS", "members": "Shreyas (Leader), Kirubakaran S., Deepak, Thennarasi, Depikashree, Somyuktha", "year": "III", "dept": "CSE"},
+        {"name": "PHANTOM", "members": "Pavithra J (Leader), Vignesh S., Erainabu, Jashvanth K., Shob S., Kanalka A. D.", "year": "II", "dept": "CSE"},
+        {"name": "INNOVERSE", "members": "Vidhula M (Leader), Kaviya C, Naveenraj K, MohanaPriyan TCS, Rosun Kirsna B, Vishnu Prasad S", "year": "III", "dept": "CSE"},
+        {"name": "HACKOVATORS", "members": "Nifa N (Leader), Aishwarya S, Harini P, Keerthana R, Manoj K, Priya S", "year": "III", "dept": "CSE"},
+        {"name": "The Daltons", "members": "Kannan (Leader), Aravind S, Bharath M, Deepa V, Ezhil A, Fathima N", "year": "III", "dept": "CSE"},
+        {"name": "Technotitans", "members": "Santhananarayanan (Leader), Gokul R, Hari P, Indhuja S, Jeeva K, Kavya M", "year": "III", "dept": "CSE"},
+        {"name": "Techtitans", "members": "Ram Prasath (Leader), Lakshmi S, Manoj B, Nithya P, Oviya R, Praveen K", "year": "III", "dept": "CSE"},
+        {"name": "Techsparks", "members": "Sheriha (Leader), Abinaya T, Bala S, Chandru M, Divya K, Elango P", "year": "III", "dept": "CSE"},
+        {"name": "TECHCSE2", "members": "Dinesh Kumar (Leader), Arjun S, Bhuvana P, Chandra K, Devi R, Ezhilarasi M", "year": "II", "dept": "CSE"},
+        {"name": "STACKOVERFLOWED", "members": "Pavithra (Leader), Akash S, Bhavani P, Chandran K, Divakar M, Eswari S", "year": "II", "dept": "CSE"},
+        {"name": "TECHNOVAX", "members": "Natchathra (Leader), Aruna S, Bharani M, Chidambaram K, Dhanalakshmi P, Ekanth S", "year": "III", "dept": "CSE"}
+    ];
+    let teamsData = [];
+
+    // --- DOM ELEMENTS ---
+    const loginContainer = document.getElementById('loginContainer');
+    const mainContent = document.getElementById('mainContent');
+    const loginForm = document.getElementById('loginForm');
+    const loginError = document.getElementById('loginError');
+    const logoutButton = document.getElementById('logoutButton');
+    const searchInput = document.getElementById('searchInput');
+    const sortSelect = document.getElementById('sortSelect');
+    const scheduleContainer = document.getElementById('scheduleContainer');
+    const summaryStats = document.getElementById('summaryStats');
+    const completedCountEl = document.getElementById('completedCount');
+    const pendingCountEl = document.getElementById('pendingCount');
+    const downloadPdfBtn = document.getElementById('downloadPdf');
+    const loader = document.getElementById('loader');
+
+    // --- APP LOGIC ---
+    function initializeData() {
+        // Correct team counts
+        const itTeams = initialTeams.filter(t => t.dept === 'IT').slice(0, 25);
+        const aimlTeams = initialTeams.filter(t => t.dept === 'AIML').slice(0, 15);
+        const otherTeams = initialTeams.filter(t => t.dept !== 'IT' && t.dept !== 'AIML');
+        
+        const allTeams = [...itTeams, ...aimlTeams, ...otherTeams];
+
+        // Re-distribute teams: 35 per venue per day
+        const capacity = 35;
+        teamsData = allTeams.map((team, index) => {
+            const day = Math.floor(index / (capacity * 3)) + 1; // 3 venues
+            const venue = Math.floor((index % (capacity * 3)) / capacity) + 1;
+            
+            return {
+                ...team,
+                sNo: index + 1,
+                day: day,
+                venue: venue,
+                done: false,
+                isOpen: false
+            };
+        });
+
+        // Add open slots if total is not a multiple of capacity
+        const totalSlotsPerDay = capacity * 3; // 3 venues
+        const totalDays = Math.ceil(allTeams.length / totalSlotsPerDay);
+        const totalRequiredSlots = totalDays * totalSlotsPerDay;
+        
+        let sNoCounter = teamsData.length + 1;
+        while(teamsData.length < totalRequiredSlots) {
+             const index = teamsData.length;
+             const day = Math.floor(index / totalSlotsPerDay) + 1;
+             const venue = Math.floor((index % totalSlotsPerDay) / capacity) + 1;
+             teamsData.push({
+                sNo: sNoCounter++,
+                day: day,
+                venue: venue,
+                name: 'Open Slot',
+                members: '—',
+                year: '—',
+                dept: '—',
+                done: false,
+                isOpen: true
+             });
+        }
+    }
+
+
+    document.addEventListener('DOMContentLoaded', () => {
+        if (localStorage.getItem('isLoggedIn') === 'true') {
+            showMainContent();
+        }
+        
+        const storedData = localStorage.getItem('teamsData');
+        if (storedData) {
+            teamsData = JSON.parse(storedData);
+        } else {
+            initializeData();
+        }
+        
+        renderApp();
+    });
+
+    loginForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const username = e.target.username.value;
+        const password = e.target.password.value;
+        // Simple frontend auth
+        if (username === 'admin' && password === 'password') {
+            localStorage.setItem('isLoggedIn', 'true');
+            initializeData(); // Re-initialize on new login
+            showMainContent();
+            renderApp();
+        } else {
+            loginError.classList.remove('hidden');
+        }
+    });
+    
+    logoutButton.addEventListener('click', () => {
+        localStorage.removeItem('isLoggedIn');
+        loginContainer.style.display = 'flex';
+        mainContent.style.display = 'none';
+    });
+
+    function showMainContent() {
+        loginContainer.style.display = 'none';
+        mainContent.style.display = 'block';
+    }
+    
+    function renderApp() {
+        renderSchedule(teamsData);
+        updateSummary();
+        updateStatusCounts();
+    }
+
+    // --- RENDER FUNCTIONS ---
+    function renderSchedule(data) {
+        scheduleContainer.innerHTML = '';
+        
+        const groupedByDay = data.reduce((acc, team) => {
+            acc[team.day] = acc[team.day] || [];
+            acc[team.day].push(team);
+            return acc;
+        }, {});
+
+        Object.keys(groupedByDay).sort().forEach(day => {
+            const dayElement = document.createElement('div');
+            dayElement.innerHTML = `<h2 class="text-2xl font-bold mt-8 mb-4 border-b-2 border-gray-300 pb-2">🗓️ DAY ${day} — September ${parseInt(day) + 11}, 2025</h2>`;
+            
+            const groupedByVenue = groupedByDay[day].reduce((acc, team) => {
+                acc[team.venue] = acc[team.venue] || [];
+                acc[team.venue].push(team);
+                return acc;
+            }, {});
+
+            Object.keys(groupedByVenue).sort().forEach(venue => {
+                const venueElement = document.createElement('div');
+                let venueName = `📍 Venue ${venue}: `;
+                if (venue == 1) venueName += `CSE Conference Hall`;
+                else if (venue == 2) venueName += `EEE Seminar Hall`;
+                else venueName += `Mechanical Seminar Hall`;
+
+                venueElement.innerHTML = `<h3 class="text-xl font-semibold mb-2">${venueName}</h3>`;
+
+                const table = createTable(groupedByVenue[venue]);
+                venueElement.appendChild(table);
+                dayElement.appendChild(venueElement);
+            });
+            scheduleContainer.appendChild(dayElement);
+        });
+    }
+
+    function createTable(teams) {
+        const table = document.createElement('table');
+        table.className = "w-full text-sm text-left text-gray-500 rounded-lg shadow-md";
+        table.innerHTML = `
+            <thead class="text-xs text-gray-700 uppercase bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3">S.No</th>
+                    <th class="px-4 py-3">Team Name</th>
+                    <th class="px-4 py-3">Members</th>
+                    <th class="px-4 py-3">Year</th>
+                    <th class="px-4 py-3">Dept</th>
+                    <th class="px-4 py-3 text-center">Done</th>
+                    <th class="px-4 py-3 text-center">Actions</th>
+                </tr>
+            </thead>
+        `;
+        const tbody = document.createElement('tbody');
+        teams.forEach(team => {
+             const row = document.createElement('tr');
+             if(team.isBreak) {
+                row.className = "bg-yellow-100 font-bold text-center text-yellow-800";
+                row.innerHTML = `<td colspan="7" class="px-4 py-3">${team.name}</td>`;
+             } else {
+                row.className = `bg-white border-b hover:bg-gray-50 ${team.done ? 'done-row' : ''}`;
+                row.dataset.sno = team.sNo;
+
+                row.innerHTML = `
+                    <td class="px-4 py-2 font-medium whitespace-nowrap">${team.sNo}</td>
+                    <td class="px-4 py-2" contenteditable="true" data-field="name">${team.name}</td>
+                    <td class="px-4 py-2" contenteditable="true" data-field="members">${team.members}</td>
+                    <td class="px-4 py-2" contenteditable="true" data-field="year">${team.year}</td>
+                    <td class="px-4 py-2" contenteditable="true" data-field="dept">${team.dept}</td>
+                    <td class="px-4 py-2 text-center">
+                        <input type="checkbox" ${team.done ? 'checked' : ''} class="w-4 h-4 text-indigo-600 bg-gray-100 border-gray-300 rounded focus:ring-indigo-500" data-sno="${team.sNo}">
+                    </td>
+                    <td class="px-4 py-2 text-center">
+                        ${team.isOpen ? 
+                        `<button class="add-team-btn text-green-600 hover:text-green-800" data-sno="${team.sNo}">Add</button>` :
+                        `<button class="remove-team-btn text-red-600 hover:text-red-800" data-sno="${team.sNo}">Remove</button>`
+                        }
+                    </td>
+                `;
+             }
+             tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        return table;
+    }
+
+    function updateSummary() {
+        const totalTeams = teamsData.filter(t => !t.isBreak && !t.isOpen).length;
+        
+        const byDept = teamsData.reduce((acc, team) => {
+            if (team.dept && !team.isOpen) {
+                acc[team.dept] = (acc[team.dept] || 0) + 1;
+            }
+            return acc;
+        }, {});
+        
+        const byYear = teamsData.reduce((acc, team) => {
+            if (team.year && !team.isOpen) {
+                // Normalize year format
+                const normalizedYear = team.year.replace(/ Year/i, '').trim();
+                acc[normalizedYear] = (acc[normalizedYear] || 0) + 1;
+            }
+            return acc;
+        }, {});
+
+        let summaryHTML = `<p><strong>Total Teams:</strong> ${totalTeams}</p>`;
+        summaryHTML += `<p class="font-semibold mt-2">By Department:</p>`;
+        Object.keys(byDept).sort().forEach(dept => {
+            summaryHTML += `<p class="ml-4">→ ${dept}: ${byDept[dept]} teams</p>`;
+        });
+        summaryHTML += `<p class="font-semibold mt-2">By Year:</p>`;
+        Object.keys(byYear).sort().forEach(year => {
+            summaryHTML += `<p class="ml-4">→ Year ${year}: ${byYear[year]} teams</p>`;
+        });
+        
+        summaryStats.innerHTML = summaryHTML;
+    }
+    
+    function updateStatusCounts() {
+        const doneCount = teamsData.filter(t => t.done).length;
+        const totalSchedulable = teamsData.filter(t => !t.isBreak && !t.isOpen).length;
+        completedCountEl.textContent = doneCount;
+        pendingCountEl.textContent = totalSchedulable - doneCount;
+    }
+
+    // --- EVENT LISTENERS ---
+    searchInput.addEventListener('input', (e) => {
+        const searchTerm = e.target.value.toLowerCase();
+        const filteredData = teamsData.filter(team => team.name && team.name.toLowerCase().includes(searchTerm));
+        renderSchedule(filteredData);
+    });
+
+    sortSelect.addEventListener('change', (e) => {
+        const sortBy = e.target.value;
+        let sortedData = [...teamsData];
+        if (sortBy === 'teamName') {
+            sortedData.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        } else if (sortBy === 'dept') {
+            sortedData.sort((a, b) => (a.dept || '').localeCompare(b.dept || ''));
+        } else if (sortBy === 'year') {
+            sortedData.sort((a, b) => (a.year || '').localeCompare(b.year || ''));
+        } else {
+             sortedData.sort((a, b) => a.sNo - b.sNo);
+        }
+        renderSchedule(sortedData);
+    });
+    
+    scheduleContainer.addEventListener('change', e => {
+        if (e.target.type === 'checkbox') {
+            const sNo = e.target.dataset.sno;
+            const team = teamsData.find(t => t.sNo == sNo);
+            if (team) {
+                team.done = e.target.checked;
+                localStorage.setItem('teamsData', JSON.stringify(teamsData));
+                e.target.closest('tr').classList.toggle('done-row', team.done);
+                updateStatusCounts();
+            }
+        }
+    });
+
+    scheduleContainer.addEventListener('click', e => {
+        const sNo = e.target.dataset.sno;
+        if (e.target.classList.contains('remove-team-btn')) {
+            if(confirm('Are you sure you want to remove this team? This will turn it into an open slot.')){
+                const teamIndex = teamsData.findIndex(t => t.sNo == sNo);
+                if (teamIndex > -1) {
+                    teamsData[teamIndex].name = 'Open Slot';
+                    teamsData[teamIndex].members = '—';
+                    teamsData[teamIndex].year = '—';
+                    teamsData[teamIndex].dept = '—';
+                    teamsData[teamIndex].done = false;
+                    teamsData[teamIndex].isOpen = true;
+                    localStorage.setItem('teamsData', JSON.stringify(teamsData));
+                    renderApp();
+                }
+            }
+        } else if (e.target.classList.contains('add-team-btn')) {
+             const teamIndex = teamsData.findIndex(t => t.sNo == sNo);
+             if (teamIndex > -1) {
+                const name = prompt("Enter Team Name:");
+                if (name) {
+                    teamsData[teamIndex].name = name;
+                    teamsData[teamIndex].members = prompt("Enter Team Members:");
+                    teamsData[teamIndex].year = prompt("Enter Year:");
+                    teamsData[teamIndex].dept = prompt("Enter Department:");
+                    teamsData[teamIndex].isOpen = false;
+                    localStorage.setItem('teamsData', JSON.stringify(teamsData));
+                    renderApp();
+                }
+             }
+        }
+    });
+
+    scheduleContainer.addEventListener('blur', e => {
+        if (e.target.isContentEditable) {
+            const sNo = e.target.closest('tr').dataset.sno;
+            const field = e.target.dataset.field;
+            const newValue = e.target.textContent;
+            
+            const teamIndex = teamsData.findIndex(t => t.sNo == sNo);
+            if (teamIndex > -1 && field) {
+                teamsData[teamIndex][field] = newValue;
+                localStorage.setItem('teamsData', JSON.stringify(teamsData));
+                updateSummary(); 
+            }
+        }
+    }, true);
+
+
+    // --- PDF GENERATION ---
+    downloadPdfBtn.addEventListener('click', async () => {
+        loader.classList.remove('hidden');
+        await new Promise(resolve => setTimeout(resolve, 100)); // allow UI to update
+
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('p', 'pt', 'a4');
+
+        doc.setFontSize(18);
+        doc.text('SIH Internal Hackathon - Schedule', 40, 50);
+        doc.setFontSize(12);
+        doc.text('Dates: September 12-13, 2025', 40, 70);
+
+        let startY = 90;
+
+        const allTables = scheduleContainer.querySelectorAll('table');
+        
+        allTables.forEach((table, index) => {
+            const header = table.closest('div').querySelector('h3');
+            const dayHeader = table.closest('div').closest('div').querySelector('h2');
+            
+            const tableHeight = table.offsetHeight * 0.75; // a rough conversion from px to pt
+            if (startY + tableHeight > doc.internal.pageSize.height - 50) {
+                 doc.addPage();
+                 startY = 40;
+            }
+
+            if(dayHeader && !doc.internal.pages[doc.internal.getNumberOfPages()].includes(dayHeader.textContent)) {
+                doc.setFontSize(14).setFont(undefined, 'bold');
+                doc.text(dayHeader.textContent, 40, startY);
+                startY += 25;
+                doc.internal.pages[doc.internal.getNumberOfPages()] = (doc.internal.pages[doc.internal.getNumberOfPages()] || "") + dayHeader.textContent;
+            }
+
+            if(header){
+                doc.setFontSize(12).setFont(undefined, 'normal');
+                doc.text(header.textContent, 40, startY);
+                startY += 20;
+            }
+
+            doc.autoTable({
+                html: table,
+                startY: startY,
+                headStyles: { fillColor: [22, 160, 133] },
+                columns: [0, 1, 2, 3, 4], // S.No, Name, Members, Year, Dept
+                 didDrawPage: function (data) {
+                    startY = data.cursor.y + 15;
+                 }
+            });
+             startY = doc.autoTable.previous.finalY + 20;
+        });
+
+        doc.save('SIH_Schedule.pdf');
+        loader.classList.add('hidden');
+    });
+
+    </script>
+</body>
+</html>
