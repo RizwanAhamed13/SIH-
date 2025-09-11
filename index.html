@@ -213,8 +213,8 @@
     <div class="panel">
       <h3>Time Rules</h3>
       <div class="hint">
-        Day 1 (12th): 10:40–13:00 → 16 teams/venue (12×9m + 4×8m), 14:00–16:30 → 18 teams/venue (12×8m + 6×9m)<br>
-        Day 2 (13th): 09:00–10:30 → 12 teams/venue (6×8m + 6×7m), 10:40–13:00 → 16 teams/venue, 14:00–16:30 → 18 teams/venue.<br>
+        Day 1 (12th): 10:40–13:00 → 14 teams/venue (14×10m), 13:00–13:10 → 1 team/venue (1×10m), 13:40–13:50 → 1 team/venue (1×10m), 13:50–14:00 → 1 team/venue (1×10m), 14:00–16:30 → 15 teams/venue (15×10m), 16:30–16:40 → 1 team/venue (1×10m)<br>
+        Day 2 (13th): 09:00–10:30 → 9 teams/venue (9×10m), 10:40–13:00 → 14 teams/venue (14×10m), 13:00–13:10 → 1 team/venue (1×10m), 13:40–13:50 → 1 team/venue (1×10m), 13:50–14:00 → 1 team/venue (1×10m), 14:00–16:30 → 15 teams/venue (15×10m), 16:30–16:40 → 1 team/venue (1×10m). Special: 16:40–16:50 (CSE only) reserved for HackHounds (AIDS).<br>
         No gaps within blocks; slots continuous; end exactly at block end. Concurrency allowed across venues.
       </div>
     </div>
@@ -453,16 +453,24 @@
       {
         key: 'Day 1 (12th)',
         blocks: [
-          { start: '10:40', end: '13:00', capacity: 16, recipe: '16x140' },
-          { start: '14:00', end: '16:30', capacity: 18, recipe: '18x150' }
+          { start: '10:40', end: '13:00', capacity: 14, recipe: 'fixed10' },
+          { start: '13:00', end: '13:10', capacity: 1, recipe: 'fixed10' },
+          { start: '13:40', end: '13:50', capacity: 1, recipe: 'fixed10' },
+          { start: '13:50', end: '14:00', capacity: 1, recipe: 'fixed10' },
+          { start: '14:00', end: '16:30', capacity: 15, recipe: 'fixed10' },
+          { start: '16:30', end: '16:40', capacity: 1, recipe: 'fixed10' }
         ]
       },
       {
         key: 'Day 2 (13th)',
         blocks: [
-          { start: '09:00', end: '10:30', capacity: 12, recipe: '12x90' },
-          { start: '10:40', end: '13:00', capacity: 16, recipe: '16x140' },
-          { start: '14:00', end: '16:30', capacity: 18, recipe: '18x150' }
+          { start: '09:00', end: '10:30', capacity: 9, recipe: 'fixed10' },
+          { start: '10:40', end: '13:00', capacity: 14, recipe: 'fixed10' },
+          { start: '13:00', end: '13:10', capacity: 1, recipe: 'fixed10' },
+          { start: '13:40', end: '13:50', capacity: 1, recipe: 'fixed10' },
+          { start: '13:50', end: '14:00', capacity: 1, recipe: 'fixed10' },
+          { start: '14:00', end: '16:30', capacity: 15, recipe: 'fixed10' },
+          { start: '16:30', end: '16:40', capacity: 1, recipe: 'fixed10' }
         ]
       }
     ];
@@ -824,10 +832,25 @@
 
       const rows = [];
 
+      // Extra reserved windows to place leftover teams (applies to both days across all venues)
+      const RESERVED_WINDOWS = [
+        { start: toMinutes('13:00'), end: toMinutes('13:10') },
+        { start: toMinutes('13:40'), end: toMinutes('13:50') },
+        { start: toMinutes('13:50'), end: toMinutes('14:00') },
+        { start: toMinutes('16:30'), end: toMinutes('16:40') }
+      ];
+      function isReservedWindow(start, end) {
+        return RESERVED_WINDOWS.some(w => w.start === start && w.end === end);
+      }
+      const extraRows = []; // rows reserved for leftovers
+
       for (const day of DAYS) {
         for (const block of day.blocks) {
           const startMinBlock = toMinutes(block.start);
-          const durations = recipeDurations(block.recipe);
+          // Build durations: fixed 10-minute slots or legacy recipe
+          const durations = (block.recipe === 'fixed10')
+            ? new Array(block.capacity).fill(10)
+            : recipeDurations(block.recipe);
           // Validate sums align block window exactly
           const sum = durations.reduce((a, b) => a + b, 0);
           const endMinBlock = toMinutes(block.end);
@@ -844,25 +867,79 @@
               cursor = end;
 
               let team = null;
-              if (qIndex < teamQueue.length) {
-                team = teamQueue[qIndex++];
-                placedCounter[team.dept]++;
+              let reserveForLeftover = isReservedWindow(start, end);
+              if (!reserveForLeftover) {
+                if (qIndex < teamQueue.length) {
+                  team = teamQueue[qIndex++];
+                  placedCounter[team.dept]++;
+                }
               }
 
               const originalIndex = rows.length;
-              rows.push({
+              const row = {
                 originalIndex,
                 id: team ? team.id : '—',
                 dept: team ? team.dept : '—',
-                name: team ? team.name : 'Open Slot',
+                name: team ? team.name : (reserveForLeftover ? 'Reserved Slot' : 'Open Slot'),
                 venue,
                 day: day.key,
                 startMin: start,
                 endMin: end
-              });
+              };
+              rows.push(row);
+              if (reserveForLeftover) {
+                extraRows.push(row);
+              }
             }
           }
         }
+      }
+
+      // After filling normal slots, place leftover teams into the reserved 13:50–14:00 slots
+      const leftoverTeams = teamQueue.slice(qIndex);
+      for (let i = 0; i < extraRows.length && i < leftoverTeams.length; i++) {
+        const r = extraRows[i];
+        const t = leftoverTeams[i];
+        r.id = t.id;
+        r.dept = t.dept;
+        r.name = t.name;
+        placedCounter[t.dept]++;
+      }
+
+      // Special handling: Move HackHounds (AIDS) to a single special slot on Day 2 (13th) 16:40–16:50 in CSE,
+      // and swap its original slot with the next leftover team (if any remains beyond those placed into reserved windows).
+      const hackIdx = rows.findIndex(r => r.name === 'HackHounds' && r.dept === 'AIDS');
+      if (hackIdx !== -1) {
+        const usedFromLeftovers = Math.min(extraRows.length, leftoverTeams.length);
+        const swapCandidate = teamQueue[qIndex + usedFromLeftovers];
+        const hackId = rows[hackIdx].id;
+        if (swapCandidate) {
+          // Replace HackHounds' original placement with the swap candidate
+          placedCounter['AIDS'] = Math.max(0, placedCounter['AIDS'] - 1);
+          rows[hackIdx].id = swapCandidate.id;
+          rows[hackIdx].dept = swapCandidate.dept;
+          rows[hackIdx].name = swapCandidate.name;
+          placedCounter[swapCandidate.dept]++;
+        } else {
+          // No extra leftover team; clear original row
+          placedCounter['AIDS'] = Math.max(0, placedCounter['AIDS'] - 1);
+          rows[hackIdx].id = '—';
+          rows[hackIdx].dept = '—';
+          rows[hackIdx].name = 'Open Slot';
+        }
+
+        // Add special single slot (CSE only)
+        rows.push({
+          originalIndex: rows.length,
+          id: hackId,
+          dept: 'AIDS',
+          name: 'HackHounds',
+          venue: 'CSE Conference Hall',
+          day: 'Day 2 (13th)',
+          startMin: toMinutes('16:40'),
+          endMin: toMinutes('16:50')
+        });
+        placedCounter['AIDS']++;
       }
 
       // Apply requested swaps (move selected IT rows to Day 1 by swapping with non-AIDS, non-IT rows)
