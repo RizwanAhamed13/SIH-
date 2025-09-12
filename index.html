@@ -114,12 +114,27 @@
       padding: 10px 12px;
       font-size: 0.95rem;
       border-bottom: 1px solid #e6c200;
+      position: sticky;
+      top: 0;
+      z-index: 1;
     }
     tbody td {
       border-bottom: 1px solid var(--border);
       padding: 10px 12px;
       font-size: 0.95rem;
+      vertical-align: top;
+      word-break: break-word;
     }
+
+    /* Row status styling */
+    tr.row-completed { border-left: 4px solid #16a34a; /* green */ }
+    tr.row-selected  { box-shadow: inset 0 0 0 2px #d97706; /* amber/golden */ }
+    .sno-cell { display: flex; align-items: center; justify-content: space-between; }
+    .sno-icons { display: flex; gap: 6px; }
+    .status-icon { cursor: pointer; font-size: 1.3rem; color: #ccc; transition: color 0.2s; }
+    .status-icon:hover { color: #999; }
+    .status-icon.completed.on { color: #16a34a; }
+    .status-icon.selected.on { color: #d97706; }
     tbody tr:hover { background: #fffef7; }
 
     .badge {
@@ -185,6 +200,9 @@
       .page { max-width: none; padding: 0; }
       .panel, .kpi, table { break-inside: avoid; }
       thead { position: sticky; top: 0; }
+      /* When printing only Completed or only Selected */
+      body.printing-completed-only tbody tr:not(.row-completed) { display: none !important; }
+      body.printing-selected-only  tbody tr:not(.row-selected)  { display: none !important; }
     }
   </style>
 </head>
@@ -201,13 +219,19 @@
     <div class="controls no-print">
       <button class="btn" id="btn-generate">Regenerate Schedule</button>
       <button class="btn" id="btn-print">Download PDF</button>
+      <button class="btn" id="btn-excel">Download Excel (CSV)</button>
+      <button class="btn" id="btn-publish-status" title="Embed current status into this HTML and download">Publish Status</button>
+      <button class="btn" id="btn-registrations">Registrations</button>
       <select id="sort-by" class="btn" style="background:#fff; border-color: var(--border);">
         <option value="original">Sort: Original (Chronological)</option>
         <option value="venue">Sort: Venue → Day → Time → Dept</option>
         <option value="time">Sort: Day → Time → Venue → Dept</option>
         <option value="dept">Sort: Department → Day → Time → Venue</option>
+        <option value="completed">Sort: Completed → others</option>
+        <option value="selected">Sort: Selected → others</option>
       </select>
       <button class="btn" id="btn-apply-sort">Apply Sort</button>
+      <button class="btn" id="btn-copy-unmatched" title="Copy list of teams with missing details">Copy Unmatched</button>
     </div>
 
     <div class="panel">
@@ -259,6 +283,11 @@
           <th>Team ID</th>
           <th>Department</th>
           <th>Team Name</th>
+          <th>Email</th>
+          <th>Student</th>
+          <th>Leader</th>
+          <th>Phone</th>
+          <th>PS/Title</th>
           <th>Venue</th>
           <th>Day</th>
           <th>Time Slot</th>
@@ -270,7 +299,2697 @@
     </table>
   </div>
 
+  <!-- Embedded, shareable status store (published) -->
+  <script id="published-status" type="application/json">{}</script>
+
   <script>
+    // Static mode: loader UI removed
+    (function setupPasteDialog() {
+      /* no-op in static mode */
+    })();
+
+    // Normalize helpers for matching
+    function normalizeDeptLabel(d) {
+      if (!d) return '';
+      const s = String(d).trim().toUpperCase();
+      if (s.includes('AI&DS') || s === 'AIDS') return 'AIDS';
+      if (s === 'AIML' || s.includes('AI ML')) return 'AIML';
+      if (s === 'CSE') return 'CSE';
+      if (s === 'IT') return 'IT';
+      if (s === 'AUTO' || s.includes('AUT')) return 'AUTO';
+      if (s === 'VLSI') return 'VLSI';
+      if (s === 'MCA') return 'MCA';
+      if (s === 'MECH' || s.includes('MECHAN')) return 'MECH';
+      if (s === 'CYS' || s.includes('CYBER')) return 'CYS';
+      if (s === 'CIVIL') return 'CIVIL';
+      if (s === 'EEE') return 'EEE';
+      if (s === 'ECE') return 'ECE';
+      return s; // fallback
+    }
+    function normalizeKeyTeamName(name) {
+      return (name || '').toString().toLowerCase().replace(/[^a-z0-9]+/g,'');
+    }
+    function makeKey(dept, team) {
+      return `${normalizeDeptLabel(dept)}|${normalizeKeyTeamName(team)}`;
+    }
+
+    // Parse the free-form registrations text into records
+    function parseRegistrations(raw) {
+      if (!raw) return [];
+      const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+      const records = [];
+      let i = 0;
+      const isNumber = s => /^\d+$/.test(s);
+      const isDateTime = s => /\d{1,2}\/\d{1,2}\/\d{4}/.test(s);
+      const isEmail = s => /@/.test(s);
+      const isPhone = s => /^[+]?\d[\d\s-]*$/.test(s);
+      const isDept = s => ['AIDS','AI&DS','AIML','CSE','IT','AUTO','VLSI','MCA','MECH','CYS','CIVIL','EEE','ECE'].includes(s.toUpperCase());
+      const looksLikeStartOfRecord = (idx) => {
+        // A start looks like: number, optional 0-2 datetime lines, then an email line
+        if (idx < 0 || idx >= lines.length) return false;
+        if (!isNumber(lines[idx])) return false;
+        let j = idx + 1;
+        // skip up to 2 datetime lines
+        for (let k = 0; k < 2 && j < lines.length && isDateTime(lines[j]); k++, j++);
+        return j < lines.length && isEmail(lines[j]);
+      };
+
+      while (i < lines.length) {
+        // Find next record start
+        if (!isNumber(lines[i])) { i++; continue; }
+        i++; // skip serial number
+        // Skip 0-2 timestamp lines if present
+        if (i < lines.length && isDateTime(lines[i])) i++;
+        if (i < lines.length && isDateTime(lines[i])) i++;
+        // Email
+        if (i >= lines.length || !isEmail(lines[i])) { continue; }
+        const email = lines[i++];
+        // Student line (could include ID and name or just name)
+        let student = (i < lines.length) ? lines[i++] : '';
+        // Team name
+        let team = (i < lines.length) ? lines[i++] : '';
+        // Leader
+        let leader = (i < lines.length) ? lines[i++] : '';
+        // Phone
+        let phone = (i < lines.length && isPhone(lines[i])) ? lines[i++] : '';
+        // Dept
+        let dept = (i < lines.length && isDept(lines[i])) ? lines[i++] : '';
+        // PS/Title (optional) — can be numeric like 25030 or text like SIH25019
+        let ps = '';
+        if (i < lines.length) {
+          // Do not consume if this is likely the start of the next record
+          if (!looksLikeStartOfRecord(i)) {
+            ps = lines[i++];
+          }
+        }
+
+        // Normalize team casing glitches
+        if (!team && student) { team = student; }
+
+        records.push({ email, student, team, leader, phone, dept: normalizeDeptLabel(dept), ps });
+      }
+      return records;
+    }
+
+    function buildRegMap(list) {
+      const map = new Map();
+      (list || []).forEach(r => {
+        const k = makeKey(r.dept, r.team);
+        if (k && !map.has(k)) map.set(k, r);
+      });
+      return map;
+    }
+
+    // Static registrations chunk 1 (first ~50 lines)
+    const STATIC_REG_LIST = [
+      {
+        email: '727624BCS097@mcet.in',
+        student: '727624BCS097 SWETHA  K',
+        team: 'HACKOPS',
+        leader: 'Swetha K',
+        phone: '6383429423',
+        dept: 'CSE',
+        ps: '25030'
+      },
+      {
+        email: '727624BAD098@mcet.in',
+        student: '727624BAD098 MADHUMITHA  P',
+        team: 'SIXTHSENSE CREW',
+        leader: 'P.Madhumitha',
+        phone: '7358020703',
+        dept: 'AIDS',
+        ps: 'Development of an Al-driven ChatBOT for INGRES as a virtuall assistant'
+      },
+      {
+        email: '727624BEC015@mcet.in',
+        student: '727624BEC015 RAMAPRABU R A',
+        team: 'TECHNOCRATS',
+        leader: 'RAMAPRABU R A',
+        phone: '7010961437',
+        dept: 'ECE',
+        ps: 'SIH25019'
+      },
+      {
+        email: '727623BAM035@mcet.in',
+        student: '727623BAM035 ADITHYA  R',
+        team: 'The Espada',
+        leader: 'Adithya R',
+        phone: '8122909282',
+        dept: 'AIML',
+        ps: 'SIH25074'
+      },
+      {
+        email: '727624bcs185@mcet.in',
+        student: 'DINESHKUMAR V',
+        team: 'Team Luffy',
+        leader: 'Dineshkumar V',
+        phone: '9500209573',
+        dept: 'CSE',
+        ps: 'SIH25010'
+      },
+      {
+        email: '727624BAD111@mcet.in',
+        student: '727624BAD111 THASLIM M',
+        team: 'Ctrl alt Elite',
+        leader: 'Thaslim. M',
+        phone: '7871062664',
+        dept: 'AIDS',
+        ps: 'SIH25082'
+      }
+      ,
+      {
+        email: '727624BAM052@mcet.in',
+        student: '727624BAM052 SOWNDARYA SREE T',
+        team: 'Hackfinity',
+        leader: 'Sowndarya Sree',
+        phone: '9944611332',
+        dept: 'AIML',
+        ps: '25092'
+      },
+      {
+        email: '727623BAM001@mcet.in',
+        student: '727623BAM001 MATHANKUMAR M',
+        team: 'Team Draft',
+        leader: 'Mathankumar M',
+        phone: '9342659525',
+        dept: 'AIML',
+        ps: 'SIH25079'
+      },
+      {
+        email: '727623BCS011@mcet.in',
+        student: '727623BCS011 NATCHATHRA N',
+        team: 'TechNovaX',
+        leader: 'Natchathra N',
+        phone: '9150512712',
+        dept: 'CSE',
+        ps: '25024'
+      },
+      {
+        email: '727623BAM060@mcet.in',
+        student: '727623BAM060 HARI KRISHNA S A',
+        team: 'Neurabytes',
+        leader: 'Cibi Ruba Arasu.K',
+        phone: '9443019626',
+        dept: 'AIML',
+        ps: 'SIH25002'
+      },
+      {
+        email: '727624BCS092@mcet.in',
+        student: '727624BCS092 DHANUSIYA S',
+        team: 'CODEX',
+        leader: 'Dhanusiya S',
+        phone: '6380726142',
+        dept: 'CSE',
+        ps: '25137'
+      },
+      {
+        email: '727624BCS074@mcet.in',
+        student: '727624BCS074 BRINDHASREE M K',
+        team: 'Runtime terrors',
+        leader: 'Brindhasree M K',
+        phone: '9345822847',
+        dept: 'CSE',
+        ps: 'Automated attendance system for rural schools'
+      },
+      {
+        email: '727624BEA005@mcet.in',
+        student: '727624BEA005 NARAN SELVAN T',
+        team: 'WebWeavers',
+        leader: 'Naren Selvan T',
+        phone: '9384438928',
+        dept: 'ECE',
+        ps: '25017'
+      },
+      {
+        email: '727624BEA018@mcet.in',
+        student: '727624BEA018 DHANESH KUMAR  K',
+        team: 'EmbeddeX',
+        leader: 'Sanmuga guru SS',
+        phone: '6380446901',
+        dept: 'ECE',
+        ps: '25014'
+      },
+      {
+        email: '727623BAM034@mcet.in',
+        student: '727623BAM034 HARISH T',
+        team: 'Wishful_Warriors',
+        leader: 'T. Harish',
+        phone: '9047996565',
+        dept: 'AIML',
+        ps: 'SIH25018'
+      },
+      {
+        email: '727624BEA049@mcet.in',
+        student: '727624BEA049 CELCIA JOBHI  K',
+        team: 'CLOUD CHASERS',
+        leader: 'MUTHUSELVAN M',
+        phone: '6369642938',
+        dept: 'ECE',
+        ps: '25016'
+      },
+      {
+        email: '727624BCS049@mcet.in',
+        student: '727624BCS049 MOHAN SAMRAJ S',
+        team: 'Tech Avengers',
+        leader: 'Mohan Samraj S',
+        phone: '9361843396',
+        dept: 'CSE',
+        ps: '25092'
+      },
+      {
+        email: '727623BCS048@mcet.in',
+        student: '727623BCS048 SANTHARAM S',
+        team: 'Tech Blinders',
+        leader: 'Santharam S',
+        phone: '8122606343',
+        dept: 'CSE',
+        ps: 'SIH25048'
+      },
+      {
+        email: '727624BEC066@mcet.in',
+        student: '727624BEC066 VAISHALI S',
+        team: 'Tech Spark',
+        leader: 'S.Vaishali',
+        phone: '9364444150',
+        dept: 'ECE',
+        ps: 'SIH25001'
+      },
+      {
+        email: '727624BEC060@mcet.in',
+        student: '727624BEC060 VENUGEETHAN  G',
+        team: 'Pentagon',
+        leader: 'Sachin Viswa P G',
+        phone: '9360268881',
+        dept: 'ECE',
+        ps: 'SIH25028'
+      },
+      {
+        email: '727624BEA051@mcet.in',
+        student: '727624BEA051 PARTHASARATHY S',
+        team: 'CODENOVA',
+        leader: 'Parthasarathy S',
+        phone: '8637451497',
+        dept: 'ECE',
+        ps: 'SIH25030'
+      },
+      {
+        email: '727624BEA036@mcet.in',
+        student: '727624BEA036 DHARANASH M',
+        team: 'Akatsuki',
+        leader: 'PRAVEEN.R',
+        phone: '6385804381',
+        dept: 'ECE',
+        ps: 'SIH25015'
+      },
+      {
+        email: '727624BAM048@mcet.in',
+        student: '727624BAM048 MANOJ  D S',
+        team: 'HackOverDrive',
+        leader: 'Lavanya',
+        phone: '6374730773',
+        dept: 'AIML',
+        ps: '25002'
+      },
+      {
+        email: '727624BEA008@mcet.in',
+        student: '727624BEA008 SRI NANDHINI  G',
+        team: 'Bug Bashers',
+        leader: 'Vishwanathan G',
+        phone: '96295 19773',
+        dept: 'ECE',
+        ps: '25060'
+      },
+      {
+        email: '727623BEC008@mcet.in',
+        student: '727623BEC008 VIGNESH S',
+        team: 'InnoVision',
+        leader: 'Mohammed Jasim B',
+        phone: '9025268900',
+        dept: 'ECE',
+        ps: '25063'
+      },
+      {
+        email: '727624bcs151@mcet.in',
+        student: 'JEEVASREE J',
+        team: 'ThinkByte',
+        leader: 'Jeevasree J',
+        phone: '8220122339',
+        dept: 'CSE',
+        ps: 'SIH25048'
+      },
+      {
+        email: '727624BIT074@mcet.in',
+        student: '727624BIT074 DHARINISH A',
+        team: 'Shazam!',
+        leader: 'A.Dharinish',
+        phone: '8248839761',
+        dept: 'IT',
+        ps: 'SIH25045 – Blockchain-Based Agri Supply Chain Transparency'
+      },
+      {
+        email: '727624BIT010@mcet.in',
+        student: '727624BIT010 HARIPRASATH V S',
+        team: 'Shazam',
+        leader: 'Dharinish .A',
+        phone: '82488 39761',
+        dept: 'IT',
+        ps: 'SIH25045'
+      },
+      {
+        email: '727624BIT082@mcet.in',
+        student: '727624BIT082 MADHAN KUMAR G',
+        team: 'Tech Wizards',
+        leader: 'Madhan Kumar G',
+        phone: '8925311803',
+        dept: 'IT',
+        ps: 'SIH25001'
+      },
+      {
+        email: '727623BIT028@mcet.in',
+        student: '727623BIT028 RAVI VISVESH S',
+        team: 'GEAR6CODERS',
+        leader: 'Sukil S',
+        phone: '9677365564',
+        dept: 'IT',
+        ps: '25013'
+      },
+      {
+        email: '727623BIT062@mcet.in',
+        student: '727623BIT062 DHANUJA SHRI P',
+        team: 'SparkMinds',
+        leader: 'Kanimozhi K',
+        phone: '8667726206',
+        dept: 'IT',
+        ps: '119'
+      },
+      {
+        email: '727623BAD026@mcet.in',
+        student: '727623BAD026 SUBIKSHA V',
+        team: 'Innovix',
+        leader: 'SUBIKSHA V',
+        phone: '6374554414',
+        dept: 'AIDS',
+        ps: 'SIH25016'
+      },
+      {
+        email: '727624BIT110@mcet.in',
+        student: '727624BIT110 JOTHIMANI  P',
+        team: 'Byte Breakers',
+        leader: 'Abinandhana V',
+        phone: '8248194670',
+        dept: 'IT',
+        ps: 'SIH25048'
+      },
+      {
+        email: '727624BIT071@mcet.in',
+        student: '727624BIT071 MADHUMITHA N',
+        team: 'HACKFINITY',
+        leader: 'HACKFINITY',
+        phone: '8015310117',
+        dept: 'IT',
+        ps: 'SIH25094'
+      },
+      {
+        email: '727624BIT113@mcet.in',
+        student: '727624BIT113 SELVABARATHI  S',
+        team: 'Technoblade',
+        leader: 'Selvabarathi S',
+        phone: '9443307994',
+        dept: 'IT',
+        ps: '25103'
+      },
+      {
+        email: '727623BIT022@mcet.in',
+        student: '727623BIT022 HARSHIDHA M',
+        team: 'Tech_Spark',
+        leader: 'Sruthi K',
+        phone: '9342026576',
+        dept: 'IT',
+        ps: 'AI-DRIVEN PUBLIC HEALTH CHATBOT FOR DISEASE AWARENESS'
+      },
+      {
+        email: '727624BCS110@mcet.in',
+        student: '727624BCS110 PAVITHRA J',
+        team: 'Phantom',
+        leader: 'Pavithra J',
+        phone: '8778851132',
+        dept: 'CSE',
+        ps: '25016'
+      },
+      {
+        email: '727624BIT013@mcet.in',
+        student: '727624BIT013 VENKAT HARI  V S',
+        team: 'Codezillas',
+        leader: 'Venkat Hari V S',
+        phone: '7397090668',
+        dept: 'IT',
+        ps: 'SIH 25035'
+      },
+      {
+        email: '727624BIT041@mcet.in',
+        student: '727624BIT041 ADHISHANKARAN R S',
+        team: 'SOLUTATORS',
+        leader: 'ADHISHANKARAN R S',
+        phone: '9952684141',
+        dept: 'IT',
+        ps: '25082'
+      },
+      {
+        email: '727624bcs157@mcet.in',
+        student: 'SIBIKA B',
+        team: 'Tech Avengers',
+        leader: 'Mohan Samraj  S',
+        phone: '9361843396',
+        dept: 'CSE',
+        ps: '25092'
+      },
+      {
+        email: '727624BIT067@mcet.in',
+        student: '727624BIT067 GIRI PRASATH  C R',
+        team: 'CodeCrafters',
+        leader: 'Giri Prasath C R',
+        phone: '7010742502',
+        dept: 'IT',
+        ps: 'SIH25092'
+      },
+      {
+        email: '727623BIT076@mcet.in',
+        student: '727623BIT076 VIJAYASARATHI M',
+        team: 'Tech_Dragons',
+        leader: 'Vijayasarathi M',
+        phone: '9080389581',
+        dept: 'IT',
+        ps: 'SIH25002'
+      },
+      {
+        email: '727623BAM049@mcet.in',
+        student: '727623BAM049 MUTHU H S',
+        team: 'Squee',
+        leader: 'Muthu H S',
+        phone: '7539962603',
+        dept: 'AIML',
+        ps: 'SIH25022'
+      },
+      {
+        email: '727624BEC112@mcet.in',
+        student: '727624BEC112 NIKILESH MANO S',
+        team: 'Phoenix',
+        leader: 'Nikilesh Mano.S',
+        phone: '9585542600',
+        dept: 'ECE',
+        ps: 'SIH25021'
+      },
+      {
+        email: '727624BCS034@mcet.in',
+        student: '727624BCS034 THARUN PRASAD K',
+        team: 'Sarpatta',
+        leader: 'Tharun prasad K',
+        phone: '9629411480',
+        dept: 'CSE',
+        ps: '25108'
+      },
+      {
+        email: '727622BIT037@mcet.in',
+        student: 'SURYA K NULL',
+        team: 'EMERGING STARS',
+        leader: 'Surya K',
+        phone: '9361746115',
+        dept: 'IT',
+        ps: 'No'
+      },
+      {
+        email: '727623BEA032@mcet.in',
+        student: '727623BEA032 DHARINEESH G',
+        team: 'PSYCHO CRACKS',
+        leader: 'DHARINEESH G',
+        phone: '9488725161',
+        dept: 'ECE',
+        ps: 'SIH25077'
+      },
+      {
+        email: '727624BAD018@mcet.in',
+        student: '727624BAD018 AKSHARAA U A',
+        team: 'Technosparkers',
+        leader: 'Shwetha.U.R',
+        phone: '+916382912830',
+        dept: 'AIDS',
+        ps: 'SIH1650'
+      },
+      {
+        email: '727623BEC089@mcet.in',
+        student: '727623BEC089 HAREHARAN V G',
+        team: 'QUANTUM DOTS',
+        leader: 'Arundharsaun A',
+        phone: '6379954822',
+        dept: 'ECE',
+        ps: '25020'
+      },
+      {
+        email: '727624BCS072@mcet.in',
+        student: '727624BCS072 TANUSHREE D J',
+        team: 'CodeSmiths',
+        leader: 'Tanushree D J',
+        phone: '8778933936',
+        dept: 'CSE',
+        ps: 'SIH25093'
+      },
+      {
+        email: '727624BAD055@mcet.in',
+        student: '727624BAD055 GURUNESH M',
+        team: 'Brogrammers',
+        leader: 'Gurunesh M',
+        phone: '9080230843',
+        dept: 'AIDS',
+        ps: 'SIH25049'
+      },
+      {
+        email: '727622BAU018@mcet.in',
+        student: 'NAVEEN  K NULL',
+        team: 'Synergy',
+        leader: 'Subhashini',
+        phone: '7397118050',
+        dept: 'AUTO',
+        ps: 'SIH25061'
+      },
+      {
+        email: '727623BAD021@mcet.in',
+        student: '727623BAD021 RAJARAJESWARI R',
+        team: 'Eagle_1',
+        leader: 'Dharani dharan.A',
+        phone: '8122683678',
+        dept: 'AIDS',
+        ps: '25071'
+      },
+      {
+        email: '727623BCS101@mcet.in',
+        student: '727623BCS101 LUKESH KUMAR S',
+        team: 'Cypherx',
+        leader: 'Lukesh Kumar S',
+        phone: '8197823378',
+        dept: 'CSE',
+        ps: '25002'
+      },
+      {
+        email: '727623BCS116@mcet.in',
+        student: '727623BCS116 PRASANTH S',
+        team: 'Six Techs',
+        leader: 'Prasanth S',
+        phone: '9080478462',
+        dept: 'CSE',
+        ps: '25048'
+      },
+      {
+        email: '727623BEA030@mcet.in',
+        student: '727623BEA030 MOWSIKAN H',
+        team: 'Virtual warriors',
+        leader: 'Mowsikan H',
+        phone: '9629323252',
+        dept: 'ECE',
+        ps: 'SIH25108'
+      },
+      {
+        email: '727623BAM014@mcet.in',
+        student: '727623BAM014 SHENBAGA DEVI B',
+        team: 'Apex GP',
+        leader: 'Shenbaga Devi B',
+        phone: '9342652513',
+        dept: 'AIML',
+        ps: '25018'
+      },
+      {
+        email: '727623BEA029@mcet.in',
+        student: '727623BEA029 MITUN S',
+        team: 'Psycho Cracks',
+        leader: 'Dharineesh.G',
+        phone: '9488725161',
+        dept: 'ECE',
+        ps: 'SIH25077'
+      },
+      {
+        email: '727624BAD048@mcet.in',
+        student: '727624BAD048 HARIHARAN  M',
+        team: 'NOVAMINDS',
+        leader: 'SWATHI V',
+        phone: '8270727782',
+        dept: 'AIDS',
+        ps: '25030'
+      },
+      {
+        email: '727623BCS035@mcet.in',
+        student: '727623BCS035 MADHAN KUMAR P',
+        team: 'Tech learners',
+        leader: 'Madhan Kumar P',
+        phone: '8667049336',
+        dept: 'CSE',
+        ps: '1615'
+      },
+      {
+        email: '727623BEA039@mcet.in',
+        student: '727623BEA039 AJAY S',
+        team: 'Virtual Warriors',
+        leader: 'Mowsikan H',
+        phone: '9629323252',
+        dept: 'ECE',
+        ps: 'SIH25108'
+      },
+      {
+        email: '727623BCS024@mcet.in',
+        student: '727623BCS024 SELVAHARSHINI  C',
+        team: 'Nexus',
+        leader: 'Selvaharshini.C',
+        phone: '8098110386',
+        dept: 'CSE',
+        ps: '25092'
+      },
+      {
+        email: '727622BCS093@mcet.in',
+        student: 'IMREEN M NULL',
+        team: 'PSYCHO CRACKS',
+        leader: 'Dharineesh G',
+        phone: '9488725161',
+        dept: 'ECE',
+        ps: 'SIH25114'
+      },
+      {
+        email: '727624BAD007@mcet.in',
+        student: '727624BAD007 SRI VAISHNAVI G P',
+        team: 'Codehex',
+        leader: 'G.Archana',
+        phone: '8939872521',
+        dept: 'AIDS',
+        ps: 'SIH25048'
+      },
+      {
+        email: '727624BAD057@mcet.in',
+        student: '727624BAD057 SANTHOSHKUMAR  S',
+        team: 'Green thumbs',
+        leader: 'Santhoshkumar S',
+        phone: '9360264300',
+        dept: 'AIDS',
+        ps: 'SIH25030'
+      },
+      {
+        email: '727623BCS112@mcet.in',
+        student: '727623BCS112 HARINI P',
+        team: 'Bug Brain',
+        leader: 'Harini P',
+        phone: '9345659840',
+        dept: 'CSE',
+        ps: 'SIH25028'
+      },
+      {
+        email: '727624BAD052@mcet.in',
+        student: '727624BAD052 DHARANI T',
+        team: 'Skywalkers',
+        leader: 'Dharani T',
+        phone: '9445742447',
+        dept: 'AIDS',
+        ps: 'Real-time Public Transport Tracking For Small Cities'
+      },
+      {
+        email: '727624BEA026@mcet.in',
+        student: '727624BEA026 KAMALESHWARAN S',
+        team: 'Techbee',
+        leader: 'Kamaleshwaran. S',
+        phone: '6374265321',
+        dept: 'ECE',
+        ps: '25013'
+      },
+      {
+        email: '727624bea060@mcet.in',
+        student: '727624BEA060 SIVADHARSHINI P',
+        team: 'Iconics',
+        leader: 'S.Ganesh kumar',
+        phone: '90809 67748',
+        dept: 'ECE',
+        ps: '25015'
+      },
+      {
+        email: '727623BEA007@mcet.in',
+        student: '727623BEA007 SANTHOASH U V',
+        team: 'Team Synersix',
+        leader: 'Santhoash U V',
+        phone: '9486633498',
+        dept: 'ECE',
+        ps: 'SIH25018'
+      },
+      {
+        email: '727624BAM005@mcet.in',
+        student: '727624BAM005 KISHORE S',
+        team: 'Synapsters',
+        leader: 'Kishore S',
+        phone: '+91 6383915271',
+        dept: 'AIML',
+        ps: '25020'
+      },
+      {
+        email: '727623BCS146@mcet.in',
+        student: '727623BCS146 SHERIHA S B',
+        team: 'Tech Spark',
+        leader: 'Sheriha S B',
+        phone: '9842422365',
+        dept: 'CSE',
+        ps: 'SIH1637'
+      },
+      {
+        email: '727624BEC009@mcet.in',
+        student: '727624BEC009 AYSHWARYA B',
+        team: 'Tech Blossoms',
+        leader: 'Abinaya A',
+        phone: '9025080093',
+        dept: 'ECE',
+        ps: '25062'
+      },
+      {
+        email: '727623BCS008@mcet.in',
+        student: '727623BCS008 SHAFFIYA S',
+        team: 'Pixel',
+        leader: 'Shaffiya S',
+        phone: '9363031709',
+        dept: 'CSE',
+        ps: '25018'
+      },
+      {
+        email: '727624MCA056@mcet.in',
+        student: '727624MCA056 HARSHINI S',
+        team: 'Hackoholics',
+        leader: 'Harshini S',
+        phone: '7418820940',
+        dept: 'MCA',
+        ps: 'SIH25052'
+      },
+      {
+        email: '727623BAM025@mcet.in',
+        student: '727623BAM025 GEETHA V',
+        team: 'Tech avatars',
+        leader: 'Geetha V',
+        phone: '8248552141',
+        dept: 'AIML',
+        ps: '25013'
+      },
+      {
+        email: '727623BAM008@mcet.in',
+        student: '727623BAM008 PRABHAKARAN R',
+        team: 'Quantum Quants',
+        leader: 'Prabhakaran R',
+        phone: '8248333958',
+        dept: 'AIML',
+        ps: 'SIH25035'
+      },
+      {
+        email: '727623BCS017@mcet.in',
+        student: '727623BCS017 DHANUSRI  K S',
+        team: 'TechTrack',
+        leader: 'Dhanusri K S',
+        phone: '8610375242',
+        dept: 'CSE',
+        ps: '25011'
+      },
+      {
+        email: '727624BAD101@mcet.in',
+        student: '727624BAD101 JEGAN  N',
+        team: 'Team Jiraiya',
+        leader: 'Jegan N',
+        phone: '6381737368',
+        dept: 'AIDS',
+        ps: 'SIH25074'
+      },
+      {
+        email: '727623BCS086@mcet.in',
+        student: '727623BCS086 SHREYA R',
+        team: 'Hack Masters',
+        leader: 'Shreya R',
+        phone: '9080847576',
+        dept: 'CSE',
+        ps: '25057'
+      },
+      {
+        email: '727623BIT103@mcet.in',
+        student: '727623BIT103 AKASH K',
+        team: 'Innovative exist here',
+        leader: 'Ashwin K',
+        phone: '+919345857852',
+        dept: 'IT',
+        ps: '25074'
+      },
+      {
+        email: '727623BIT093@mcet.in',
+        student: '727623BIT093 VISHVA A',
+        team: 'Achievers',
+        leader: 'Nandhakumar.B',
+        phone: '9344376224',
+        dept: 'IT',
+        ps: 'SIH25047'
+      },
+      {
+        email: '727623BIT055@mcet.in',
+        student: '727623BIT055 ATHESWARAN  S V',
+        team: 'Achievers',
+        leader: 'Nandhakumar B',
+        phone: '9344376224',
+        dept: 'IT',
+        ps: 'SIH25047'
+      },
+      {
+        email: '727623BEA033@mcet.in',
+        student: '727623BEA033 MOHAMED IRSHADH B',
+        team: 'Team ForgeAlly',
+        leader: 'Mohamed Irshadh',
+        phone: '6382617699',
+        dept: 'ECE',
+        ps: 'SIH25114'
+      },
+      {
+        email: '727623BEC060@mcet.in',
+        student: '727623BEC060 SANGEETHRAJAN S',
+        team: 'Echo Tronics',
+        leader: 'Sangeethrajan.S',
+        phone: '8248508685',
+        dept: 'ECE',
+        ps: '25058'
+      },
+      {
+        email: '727623BCS167@mcet.in',
+        student: '727623BCS167 RAMPRASAD M',
+        team: 'Tech Titans',
+        leader: 'Ramprasad M',
+        phone: '6379257429',
+        dept: 'CSE',
+        ps: '25009'
+      },
+      {
+        email: '727623BEC003@mcet.in',
+        student: '727623BEC003 MUKESH D',
+        team: 'HexaHive',
+        leader: 'MUKESH D',
+        phone: '7019689170',
+        dept: 'ECE',
+        ps: 'SIH25050'
+      },
+      {
+        email: '727623BIT057@mcet.in',
+        student: '727623BIT057 KARTHICK M',
+        team: 'BYTE KARMA',
+        leader: 'Karthick M',
+        phone: '9940975490',
+        dept: 'IT',
+        ps: '25030'
+      },
+      {
+        email: '727623BEA004@mcet.in',
+        student: '727623BEA004 GURUSARANA  G S',
+        team: 'Team ForgeAlly',
+        leader: 'Mohamad Irshadh.B',
+        phone: '6382617699',
+        dept: 'ECE',
+        ps: 'SIH25062'
+      },
+      {
+        email: '727623BEA014@mcet.in',
+        student: '727623BEA014 YAZHINI S',
+        team: 'Virtual Warriors',
+        leader: 'Mowsikan H',
+        phone: '9629323252',
+        dept: 'ECE',
+        ps: 'SIH25063'
+      },
+      {
+        email: '727624BAD070@mcet.in',
+        student: '727624BAD070 LOGASHREE V',
+        team: 'Who am I',
+        leader: 'Logashree V',
+        phone: '6369468457',
+        dept: 'AIDS',
+        ps: 'SIH25027'
+      },
+      {
+        email: '727624BEC014@mcet.in',
+        student: '727624BEC014 ARJUNTHILAK C',
+        team: 'Code Beasst',
+        leader: 'Arjunthilak C',
+        phone: '6383145828',
+        dept: 'ECE',
+        ps: '25109'
+      },
+      {
+        email: '727624BCE014@mcet.in',
+        student: '727624BCE014 RUTH CAROLINE S',
+        team: 'DISASTER DEFENDERS',
+        leader: 'Ruth Caroline.S',
+        phone: '6381332100',
+        dept: 'CSE',
+        ps: 'SIH1687'
+      },
+      {
+        email: '727624BIT026@mcet.in',
+        student: '727624BIT026 VENTHAN S',
+        team: 'Techolics',
+        leader: 'Venthan.s',
+        phone: '9843017017',
+        dept: 'IT',
+        ps: '16'
+      },
+      {
+        email: '727624BCE029@mcet.in',
+        student: '727624BCE029 GAYATHRI DEVI S',
+        team: 'Gridlock gladiators',
+        leader: 'Gayathri devi .S',
+        phone: '9943591615',
+        dept: 'CIVIL',
+        ps: 'SIH1575'
+      },
+      {
+        email: '727624BEC042@mcet.in',
+        student: '727624BEC042 SIDDARTH  R',
+        team: 'Gryffindors',
+        leader: 'Krishnapriya',
+        phone: '9080576419',
+        dept: 'EEE',
+        ps: '25063'
+      },
+      {
+        email: '727623BAD058@mcet.in',
+        student: '727623BAD058 THASLIMA NASRIN S',
+        team: 'Innovatrix',
+        leader: 'Thaslima Nasrin S',
+        phone: '9791377554',
+        dept: 'AIDS',
+        ps: '25099'
+      },
+      {
+        email: '727624BCS020@mcet.in',
+        student: '727624BCS020 PAVITHRA P',
+        team: 'StackOverflowed',
+        leader: 'Pavithra P',
+        phone: '9626124925',
+        dept: 'CSE',
+        ps: '25103'
+      },
+      {
+        email: '727623BEC112@mcet.in',
+        student: '727623BEC112 ARAVIND A',
+        team: 'VisionX',
+        leader: 'Aravind A',
+        phone: '9345990731',
+        dept: 'ECE',
+        ps: '25007'
+      },
+      {
+        email: '727624BAD011@mcet.in',
+        student: '727624BAD011 KRISIKESH  KA',
+        team: 'Dark programmers',
+        leader: 'Krisikesh',
+        phone: '8925778355',
+        dept: 'AIDS',
+        ps: 'SIH25044'
+      },
+      {
+        email: '727624BAD095@mcet.in',
+        student: '727624BAD095 ABILASH E',
+        team: 'Ctrl alt Elite',
+        leader: 'Thaslim.M',
+        phone: '7871062664',
+        dept: 'AIDS',
+        ps: 'SIH25082'
+      },
+      {
+        email: '727623BIT023@mcet.in',
+        student: '727623BIT023 SHONITH S',
+        team: 'Tech Titans',
+        leader: 'SHONITH S',
+        phone: '6383795700',
+        dept: 'IT',
+        ps: '25013'
+      },
+      {
+        email: '727624MCA008@mcet.in',
+        student: '727624MCA008 BAVITHRA  P',
+        team: 'SheCodes',
+        leader: 'Bavithra P',
+        phone: '9042929300',
+        dept: 'MCA',
+        ps: 'SIH25082'
+      },
+      {
+        email: '727624MCA031@mcet.in',
+        student: '727624MCA031 VIJI  R',
+        team: 'Tycoon Squard',
+        leader: 'Suganth N',
+        phone: '6379103517',
+        dept: 'MCA',
+        ps: 'SIH25017'
+      },
+      {
+        email: '727623BCS070@mcet.in',
+        student: '727623BCS070 NIFA N',
+        team: 'Hacknovators',
+        leader: 'Nifa N',
+        phone: '9345023413',
+        dept: 'CSE',
+        ps: 'SIH25012'
+      },
+      {
+        email: '727624MCA051@mcet.in',
+        student: '727624MCA051 VISHNUPRIYA P',
+        team: 'BUG BUSTERS',
+        leader: 'VISHNUPRIYA. P',
+        phone: '8838456708',
+        dept: 'MCA',
+        ps: 'SIH25012'
+      },
+      {
+        email: '727623BAD042@mcet.in',
+        student: '727623BAD042 TALIP  I',
+        team: 'Innosparks',
+        leader: 'Praveena M S',
+        phone: '9342029066',
+        dept: 'AIDS',
+        ps: '25108'
+      },
+      {
+        email: '727623BAD062@mcet.in',
+        student: '727623BAD062 PRAVEEN KUMAR A S',
+        team: 'TEAM LOOSERS',
+        leader: 'SANMUGAPRIYA K P',
+        phone: '8807750808',
+        dept: 'AIDS',
+        ps: 'SIH25031'
+      },
+      {
+        email: '727624MCA014@mcet.in',
+        student: '727624MCA014 VISHNUPRIYA  S',
+        team: 'Codezone',
+        leader: 'Brindha P',
+        phone: '8838727692',
+        dept: 'MCA',
+        ps: 'SIH25035'
+      },
+      {
+        email: '727624MCA017@mcet.in',
+        student: '727624MCA017 SUJI  M',
+        team: 'CodeX',
+        leader: 'Suji M',
+        phone: '6383999967',
+        dept: 'MCA',
+        ps: 'SIH25028'
+      },
+      {
+        email: '727624MCA024@mcet.in',
+        student: '727624MCA024 DHIVYA DHARSHINE N',
+        team: 'Nexus',
+        leader: 'Kaviya M',
+        phone: '9791680690',
+        dept: 'MCA',
+        ps: 'SIH25050'
+      },
+      {
+        email: '727624BAD110@mcet.in',
+        student: '727624BAD110 PRIYANKA S',
+        team: 'Spark squad',
+        leader: 'Priyanka S',
+        phone: '8838073857',
+        dept: 'AIDS',
+        ps: '25076'
+      },
+      {
+        email: '727624BEC085@mcet.in',
+        student: '727624BEC085 ASWIN  A K',
+        team: 'Team Alpha',
+        leader: 'Hanush Dhilothuma J',
+        phone: '7695919499',
+        dept: 'ECE',
+        ps: '25020'
+      },
+      {
+        email: '727624BEV019@mcet.in',
+        student: '727624BEV019 SANDEEP  P',
+        team: 'Electra Hub',
+        leader: 'Sandeep P',
+        phone: '9361395542',
+        dept: 'VLSI',
+        ps: '25051'
+      },
+      {
+        email: '727623BIT040@mcet.in',
+        student: '727623BIT040 SUMITHRA M',
+        team: 'Code4Change',
+        leader: 'Sumithra M',
+        phone: '6381649557',
+        dept: 'IT',
+        ps: '25034'
+      },
+      {
+        email: '727624BEV011@mcet.in',
+        student: '727624BEV011 PRADEEP KUMAR S M',
+        team: 'Silicon Squard',
+        leader: 'Harshini V',
+        phone: '9489784725',
+        dept: 'VLSI',
+        ps: '25025'
+      },
+      {
+        email: '727624BEV047@mcet.in',
+        student: '727624BEV047 DANYA CLARIBEL A',
+        team: 'PROTO PIRATES',
+        leader: 'A. DANYA CLARIBEL',
+        phone: '9003205134',
+        dept: 'VLSI',
+        ps: 'SIH25077'
+      },
+      {
+        email: '727623BSC046@mcet.in',
+        student: '727623BSC046 JOHN DANIEL S P',
+        team: 'CYBEROCKS',
+        leader: 'RITHIKA S',
+        phone: '9360821090',
+        dept: 'CYS',
+        ps: '25127'
+      },
+      {
+        email: '727623bev015@mcet.in',
+        student: '727623BEV015 ARAVIND M B',
+        team: 'Team AXION',
+        leader: 'ARAVIND M B',
+        phone: '9487607697',
+        dept: 'VLSI',
+        ps: 'SIH25021'
+      },
+      {
+        email: '727623BSC031@mcet.in',
+        student: '727623BSC031 DEEPAK SUNDHAR  B',
+        team: 'FireFlies',
+        leader: 'Mohammed Fazal B',
+        phone: '7845677749',
+        dept: 'CYS',
+        ps: '25035'
+      },
+      {
+        email: '727622BAD082@mcet.in',
+        student: 'MUKILESH S NULL',
+        team: 'Mind Flayers',
+        leader: 'Prienga S',
+        phone: '9944162369',
+        dept: 'AIDS',
+        ps: 'SIH25045'
+      },
+      {
+        email: '727623BAM012@mcet.in',
+        student: '727623BAM012 SHIVARANJANI M',
+        team: 'Tech Squad',
+        leader: 'Shreenithi E',
+        phone: '6369984116',
+        dept: 'AIML',
+        ps: '25028'
+      },
+      {
+        email: '727623BSC060@mcet.in',
+        student: '727623BSC060 SHYAM PRASANTH K',
+        team: 'Enigma',
+        leader: 'Ajay Raagav MK',
+        phone: '8072004540',
+        dept: 'CYS',
+        ps: '25029'
+      },
+      {
+        email: '727623BCE006@mcet.in',
+        student: '727623BCE006 RAGUL PRIYAN G',
+        team: 'Purezza',
+        leader: 'Ragulpriyan.G',
+        phone: '9042990377',
+        dept: 'CIVIL',
+        ps: '25085'
+      },
+      {
+        email: '727623BCE030@mcet.in',
+        student: '727623BCE030 KAVINRAJ R K',
+        team: 'Eco Pavers',
+        leader: 'V. G. Yuvanesan',
+        phone: '9489111155',
+        dept: 'CIVIL',
+        ps: '25003'
+      },
+      {
+        email: '727623BCE008@mcet.in',
+        student: '727623BCE008 RITHISH V',
+        team: 'Fight Club',
+        leader: 'Kavin Kumara R',
+        phone: '9025815394',
+        dept: 'CIVIL',
+        ps: 'SIH25090'
+      },
+      {
+        email: '727623BAU024@mcet.in',
+        student: '727623BAU024 KAARTHEKAEYAN  D',
+        team: 'Black Pearl',
+        leader: 'KAARTHEKAEYAN D',
+        phone: '8610591328',
+        dept: 'AUTO',
+        ps: '2508'
+      },
+      {
+        email: '727623BAD115@mcet.in',
+        student: '727623BAD115 SHIVARAM R',
+        team: 'Tech Icons',
+        leader: 'Anumithra',
+        phone: '+91 97874 48585',
+        dept: 'AIDS',
+        ps: '25060'
+      },
+      {
+        email: '727624BEC030@mcet.in',
+        student: '727624BEC030 PANDI GOWTHAM  P',
+        team: 'Teach Titans',
+        leader: 'ADHITYA V',
+        phone: '7904010517',
+        dept: 'ECE',
+        ps: 'SIH25137'
+      },
+      {
+        email: '727624bau050@mcet.in',
+        student: '727624BAU050 INIYAN R',
+        team: 'Akuhei',
+        leader: 'Iniyan R',
+        phone: '9655466884',
+        dept: 'AUTO',
+        ps: 'SIH25013'
+      },
+      {
+        email: '727623BAD017@mcet.in',
+        student: '727623BAD017 HARINI  M',
+        team: 'Teen Titans',
+        leader: 'Mahendra kumar',
+        phone: '9842257176',
+        dept: 'AIDS',
+        ps: '25024'
+      },
+      {
+        email: '727624BSC026@mcet.in',
+        student: '727624BSC026 JYOSTHANA L',
+        team: 'Cyber Nexus',
+        leader: 'Suganth',
+        phone: '+91 99407 32123',
+        dept: 'CYS',
+        ps: 'SIH25019'
+      },
+      {
+        email: '727624BEV024@mcet.in',
+        student: '727624BEV024 SANTHOSH V',
+        team: 'Globe coders',
+        leader: 'Santhosh V',
+        phone: '8122467823',
+        dept: 'VLSI',
+        ps: 'Development of a travel related software app that can be installed on mobile phones that could capture trip related information'
+      },
+      {
+        email: '727624BEV053@mcet.in',
+        student: '727624BEV053 KIRUBAKAR  T',
+        team: 'Hexagun',
+        leader: 'Sabari Nathan.S',
+        phone: '6380493652',
+        dept: 'VLSI',
+        ps: 'SIH25021'
+      },
+      {
+        email: '727623BAD107@mcet.in',
+        student: '727623BAD107 SRINATHI K',
+        team: 'Tech Paltans',
+        leader: 'Gowthami R',
+        phone: '9042755664',
+        dept: 'AIDS',
+        ps: '25071'
+      },
+      {
+        email: 'vijaykk@drmcet.ac.in',
+        student: 'vijay kannan',
+        team: '404 Not Found',
+        leader: 'Nidhishpavan V',
+        phone: '8072058067',
+        dept: 'MECH',
+        ps: 'Improved onion storage technology for enhancing shelf life of onions'
+      },
+      {
+        email: '727623bev061@mcet.in',
+        student: '727623BEV061 MOHAMED AARIF S',
+        team: 'Innowiz',
+        leader: 'Mohamed Aarif S',
+        phone: '8807955472',
+        dept: 'VLSI',
+        ps: '25084'
+      },
+      {
+        email: '727623BAD053@mcet.in',
+        student: '727623BAD053 BHARATH G',
+        team: 'Team Wizards',
+        leader: 'Bharath G',
+        phone: '9345528737',
+        dept: 'AIDS',
+        ps: 'SIH25013'
+      },
+      {
+        email: '727623BME057@mcet.in',
+        student: '727623BME057 HARSINI K S',
+        team: 'MECH BHARATH INNOVATORS',
+        leader: 'Harsini.K.S',
+        phone: '6382846909',
+        dept: 'MECH',
+        ps: '25109'
+      },
+      {
+        email: '727624BME002@mcet.in',
+        student: '727624BME002 SACHIN NARAYANA  K S',
+        team: 'Sparkers',
+        leader: 'Sachin narayana K.S',
+        phone: '8220376675',
+        dept: 'MECH',
+        ps: 'SIH25047'
+      },
+      {
+        email: '727624BME013@mcet.in',
+        student: '727624BME013 SARAN KUMAR M',
+        team: 'Group of 6 (G6)',
+        leader: 'Heman Jegan Nathan M',
+        phone: '9566812455',
+        dept: 'MECH',
+        ps: 'SIH25072'
+      },
+      {
+        email: '727624BME019@mcet.in',
+        student: '727624BME019 DHATCHANAMOORTHI  G',
+        team: 'HackHard',
+        leader: 'Lohith Krishna K',
+        phone: '6381744964',
+        dept: 'MECH',
+        ps: '25125'
+      },
+      {
+        email: '727623BME054@mcet.in',
+        student: '727623BME054 BALANAVEEN S',
+        team: 'DragFist',
+        leader: 'N.S.Kavin',
+        phone: '+91 93604 64855',
+        dept: 'MECH',
+        ps: 'SIH25036'
+      },
+      {
+        email: '727623BAD095@mcet.in',
+        student: '727623BAD095 KESHAVA HARISH S',
+        team: 'Team Wizards',
+        leader: 'Bharath G',
+        phone: '9345528737',
+        dept: 'AIDS',
+        ps: 'SIH25103'
+      },
+      {
+        email: 'gurupranessv@drmcet.ac.in',
+        student: 'GURUPRANES SV',
+        team: 'Hack Hard',
+        leader: 'Lohith Krishna K',
+        phone: '6381744964',
+        dept: 'MECH',
+        ps: '25116'
+      },
+      {
+        email: '727624BSC051@mcet.in',
+        student: '727624BSC051 HARIPRIYA A',
+        team: 'Heckharmony',
+        leader: 'Yuvashree C',
+        phone: '7358358801',
+        dept: 'CYS',
+        ps: 'Blockchain based supply chain transparency for agricultural produce '
+      },
+      {
+        email: '727623BCE032@mcet.in',
+        student: '727623BCE032 MANI BHARTHI I U',
+        team: 'Power House',
+        leader: 'I U Mani Bharathi',
+        phone: '9344684940',
+        dept: 'CIVIL',
+        ps: '25112'
+      },
+      {
+        email: '727624BSC001@mcet.in',
+        student: '727624BSC001 VISHAL  M',
+        team: 'Clarentz',
+        leader: 'Vishal',
+        phone: '9043916716',
+        dept: 'CYS',
+        ps: 'SIH25030'
+      },
+      {
+        email: '727624BAD302@mcet.in',
+        student: '727624BAD302 SANKARAGURU V',
+        team: 'EAGLE 1',
+        leader: 'Dharanidharan A',
+        phone: '8122683678',
+        dept: 'AIDS',
+        ps: '25071'
+      },
+      {
+        email: '727624bau034@mcet.in',
+        student: '727624BAU034 AJAI R',
+        team: 'SPARKERS',
+        leader: 'Harshitha G K',
+        phone: 'harshithaganesh21@gmail.com',
+        dept: 'EEE',
+        ps: 'SIH25036'
+      },
+      {
+        email: '727624BAD021@mcet.in',
+        student: '727624BAD021 HAYGEN SAMUEL',
+        team: 'Team basha',
+        leader: 'Irfan basha',
+        phone: '9952364800',
+        dept: 'AIDS',
+        ps: 'SIH25073'
+      },
+      {
+        email: '727623BAD028@mcet.in',
+        student: '727623BAD028 JUHI BHARATHI',
+        team: 'Code4Care',
+        leader: 'Juhi BM',
+        phone: '9629736689',
+        dept: 'AIDS',
+        ps: 'SIH25018'
+      },
+      {
+        email: '727623BAD047@mcet.in',
+        student: '727623BAD047 MAHENDRA KUMAR T',
+        team: 'Teen Titans',
+        leader: 'Mahendra Kumar T',
+        phone: '9842257176',
+        dept: 'AIDS',
+        ps: '25024'
+      },
+      {
+        email: '727623BAD029@mcet.in',
+        student: '727623BAD029 SUWETHA S T',
+        team: 'Tech Innovators',
+        leader: 'Suwetha.S.T',
+        phone: '8072661713',
+        dept: 'AIDS',
+        ps: '25001'
+      },
+      {
+        email: '727623BAD009@mcet.in',
+        student: '727623BAD009 NANDINI R',
+        team: 'Tech Innovators',
+        leader: 'Suwetha.S.T',
+        phone: '8072661713',
+        dept: 'AIDS',
+        ps: '25001'
+      },
+      {
+        email: '727623BAD043@mcet.in',
+        student: '727623BAD043 THRISHANTH K',
+        team: 'Tech Innovators',
+        leader: 'Suwetha S.T',
+        phone: '8072661713',
+        dept: 'AIDS',
+        ps: '25001'
+      },
+      {
+        email: '727624BEV033@mcet.in',
+        student: '727624BEV033 AHALYA  P S',
+        team: 'The Radioactives',
+        leader: 'Nivashini K V',
+        phone: '+91 63796 36990',
+        dept: 'VLSI',
+        ps: '25036'
+      },
+      {
+        email: '727623BAD003@mcet.in',
+        student: '727623BAD003 POOJA S',
+        team: 'DATAMINDS',
+        leader: 'Pooja S',
+        phone: '9445251282',
+        dept: 'AIDS',
+        ps: 'SIH25002'
+      },
+      {
+        email: '727623BCE011@mcet.in',
+        student: '727623BCE011 SANTHOSH  V',
+        team: 'THE PILLARS',
+        leader: 'MOMAL NAFEESHA. M',
+        phone: '7339253675',
+        dept: 'CIVIL',
+        ps: 'SIH25098'
+      },
+      {
+        email: '727624BAD092@mcet.in',
+        student: '727624BAD092 SIVASAKTHI S',
+        team: 'Innovators',
+        leader: 'Sivasakthi.S',
+        phone: '8870913805',
+        dept: 'AIDS',
+        ps: 'Automated bus scheduling and route management system for Delhi transport corporation '
+      },
+      {
+        email: '727624BCE020@mcet.in',
+        student: '727624BCE020 SHANU  S',
+        team: 'Aurora',
+        leader: 'Shanu.S',
+        phone: '7812844366',
+        dept: 'CIVIL',
+        ps: 'Dustless duster'
+      },
+      {
+        email: '727623BAD087@mcet.in',
+        student: '727623BAD087 DHARUN M R',
+        team: 'BlueStar',
+        leader: 'Dharun.M.R',
+        phone: '8838345586',
+        dept: 'AIDS',
+        ps: '25094'
+      },
+      {
+        email: '727624bau023@mcet.in',
+        student: '727624BAU023 TAMILSELVAN S',
+        team: 'AGRIVISION',
+        leader: 'JANANI V G',
+        phone: '9789466209',
+        dept: 'VLSI',
+        ps: 'SIH25099'
+      },
+      {
+        email: '727624BEE115@mcet.in',
+        student: '727624BEE115 SHREE HARITHA S',
+        team: 'SPARKERS',
+        leader: 'VINOTH.B',
+        phone: '88381 55079',
+        dept: 'EEE',
+        ps: 'SIH1573'
+      },
+      {
+        email: '727623BAU002@mcet.in',
+        student: '727623BAU002 MITHUN KUMAR  K S',
+        team: 'NextGen Autotech',
+        leader: 'Mithun Kumar K S',
+        phone: '9025515051',
+        dept: 'AUTO',
+        ps: 'SIH25119 (Student Innovation - Smart Vehicles - Hardware)'
+      },
+      {
+        email: '727624BAM025@mcet.in',
+        student: '727624BAM025 MUTHU RAJESH  V',
+        team: 'Team_Binary',
+        leader: 'Sarvesh R',
+        phone: '8610346478',
+        dept: 'AIML',
+        ps: 'SIH25037'
+      },
+      {
+        email: '727623BAU022@mcet.in',
+        student: '727623BAU022 NAVEEN  M',
+        team: 'Black pearl',
+        leader: 'kaarthekaeyan D',
+        phone: '8610591328',
+        dept: 'AUTO',
+        ps: '2508'
+      },
+      {
+        email: '727623BAM028@mcet.in',
+        student: '727623BAM028 RUBIDA  M',
+        team: 'Tech Hackers',
+        leader: 'Rubida M',
+        phone: '8807113865',
+        dept: 'AIML',
+        ps: '25030'
+      },
+      {
+        email: '727623BAD001@mcet.in',
+        student: '727623BAD001 SIVAHARITHA S',
+        team: 'Technova',
+        leader: 'Sivaharitha S',
+        phone: '9345683871',
+        dept: 'AIDS',
+        ps: '25002'
+      },
+      {
+        email: '727624BAD058@mcet.in',
+        student: '727624BAD058 SANTHOSH  D',
+        team: '404 not found',
+        leader: 'D.Santhosh',
+        phone: '6380864692',
+        dept: 'AIDS',
+        ps: 'SIH251040'
+      },
+      {
+        email: '727624BCE306@mcet.in',
+        student: '727624BCE306 GOGUL A',
+        team: 'Straw Hat',
+        leader: 'GOGUL A',
+        phone: '8925630718',
+        dept: 'CIVIL',
+        ps: '25098'
+      },
+      {
+        email: '727623BCE010@mcet.in',
+        student: '727623BCE010 AKILA SHREE K',
+        team: 'Straw hat',
+        leader: 'A. Gogul',
+        phone: '+91 89256 30718',
+        dept: 'CIVIL',
+        ps: '25098'
+      },
+      {
+        email: '727624BEE034@mcet.in',
+        student: '727624BEE034 DHARSHINI S',
+        team: 'SUPER NOVA',
+        leader: 'Surya Prakash',
+        phone: '9688485539',
+        dept: 'EEE',
+        ps: 'SIH25077'
+      },
+      {
+        email: '727623BIT016@mcet.in',
+        student: '727623BIT016 MOHAMMED SHAMIR M',
+        team: 'TECH HUNTERS',
+        leader: 'Mohammed shamir M',
+        phone: '8122915767',
+        dept: 'IT',
+        ps: '25022'
+      },
+      {
+        email: '727622BAD077@mcet.in',
+        student: 'ARUNKARTHICK K NULL',
+        team: 'TempX Workforce',
+        leader: 'Arunkarthick K',
+        phone: '9994110032',
+        dept: 'AIDS',
+        ps: 'SIH25023'
+      },
+      {
+        email: '727623BEE092@mcet.in',
+        student: '727623BEE092 SRISANTHOSH V G',
+        team: 'NEXUS REBELS',
+        leader: 'SRISANTHOSH V G',
+        phone: '9942731729',
+        dept: 'EEE',
+        ps: 'SIH25077'
+      },
+      {
+        email: '727623BCE025@mcet.in',
+        student: '727623BCE025 PARVASAHAMED S',
+        team: 'Civil',
+        leader: 'Yamini G',
+        phone: '9043540891',
+        dept: 'CIVIL',
+        ps: 'SIH25099'
+      },
+      {
+        email: '727623BAD055@mcet.in',
+        student: '727623BAD055 ASHWATH N',
+        team: 'TeenTitans',
+        leader: 'Harini M',
+        phone: '6374860559',
+        dept: 'AIDS',
+        ps: '25024'
+      },
+      {
+        email: '727624BAD097@mcet.in',
+        student: '727624BAD097 KAVIYA P',
+        team: 'Akatsuki',
+        leader: 'Kaviya P',
+        phone: '9342191045',
+        dept: 'AIDS',
+        ps: 'SIH25073'
+      },
+      {
+        email: '727624BAD004@mcet.in',
+        student: '727624BAD004 ABINAYA SRI R',
+        team: 'Byte Shifters',
+        leader: 'ABINAYA SRI R',
+        phone: '9345892299',
+        dept: 'AIDS',
+        ps: 'SIH25126'
+      },
+      {
+        email: '727624BAD006@mcet.in',
+        student: '727624BAD006 AKASH S',
+        team: 'Codehunters',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25139'
+      },
+      {
+        email: '727624BAD008@mcet.in',
+        student: '727624BAD008 ANUSKHA SRI K',
+        team: 'Crt Alt Elite',
+        leader: 'ANUSKHA SRI K',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25026'
+      },
+      {
+        email: '727624BAD010@mcet.in',
+        student: '727624BAD010 ARUN K',
+        team: 'Flyers',
+        leader: 'ARUN K',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25010'
+      },
+      {
+        email: '727624BAD011@mcet.in',
+        student: '727624BAD011 ARUNA S',
+        team: 'Hackers united',
+        leader: 'ARUNA S',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25042'
+      },
+      {
+        email: '727624BAD013@mcet.in',
+        student: '727624BAD013 BHAVADHARANI R',
+        team: 'HackHounds',
+        leader: 'BHAVADHARANI R',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25055'
+      },
+      {
+        email: '727624BAD015@mcet.in',
+        student: '727624BAD015 DHARSAN S',
+        team: 'Innovatvex',
+        leader: 'DHARSAN S',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25068'
+      },
+      {
+        email: '727624BAD017@mcet.in',
+        student: '727624BAD017 DHINESH S',
+        team: 'Jambusters',
+        leader: 'DHINESH S',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25081'
+      },
+      {
+        email: '727624BAD019@mcet.in',
+        student: '727624BAD019 DHIVYA SRI B',
+        team: 'Neural ninjas',
+        leader: 'DHIVYA SRI B',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25094'
+      },
+      {
+        email: '727624BAD021@mcet.in',
+        student: '727624BAD021 GOKUL K',
+        team: 'Quantum hustle',
+        leader: 'GOKUL K',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25107'
+      },
+      {
+        email: '727624BAD023@mcet.in',
+        student: '727624BAD023 HARINI V',
+        team: 'Renova',
+        leader: 'HARINI V',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25120'
+      },
+      {
+        email: '727624BAD025@mcet.in',
+        student: '727624BAD025 HARISH S',
+        team: 'Synora',
+        leader: 'HARISH S',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25133'
+      },
+      {
+        email: '727624BAD027@mcet.in',
+        student: '727624BAD027 HEERA S',
+        team: 'Tech Psywell Nexus',
+        leader: 'HEERA S',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25146'
+      },
+      {
+        email: '727624BAD029@mcet.in',
+        student: '727624BAD029 HEMALATHA M',
+        team: 'Tech sparks',
+        leader: 'HEMALATHA M',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25159'
+      },
+      {
+        email: '727624BAD031@mcet.in',
+        student: '727624BAD031 JANANI S',
+        team: 'Terra Titans',
+        leader: 'JANANI S',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25172'
+      },
+      {
+        email: '727624BAD033@mcet.in',
+        student: '727624BAD033 JAYASURYA S',
+        team: 'Think tankers',
+        leader: 'JAYASURYA S',
+        phone: '9876543210',
+        dept: 'AIDS',
+        ps: 'SIH25185'
+      },
+      {
+        email: '727624BCS001@mcet.in',
+        student: '727624BCS001 AARTHI S',
+        team: 'BUG BRIAN',
+        leader: 'AARTHI S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25127'
+      },
+      {
+        email: '727624BIT002@mcet.in',
+        student: '727624BIT002 ABISHEK S',
+        team: 'Byte beakers',
+        leader: 'ABISHEK S',
+        phone: '9876543210',
+        dept: 'IT',
+        ps: 'SIH25128'
+      },
+      {
+        email: '727624BCS003@mcet.in',
+        student: '727624BCS003 ABISHEK R',
+        team: 'Bytebattlers',
+        leader: 'ABISHEK R',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25140'
+      },
+      {
+        email: '727624BCS005@mcet.in',
+        student: '727624BCS005 AJAY S',
+        team: 'CodeBlasters',
+        leader: 'AJAY S',
+        phone: '9876543210',
+        dept: 'AIML',
+        ps: 'SIH25153'
+      },
+      {
+        email: '727624BIT004@mcet.in',
+        student: '727624BIT004 AKASH S',
+        team: 'ERROR-404',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'IT',
+        ps: 'SIH25141'
+      },
+      {
+        email: '727624BCS007@mcet.in',
+        student: '727624BCS007 AKASH R',
+        team: 'Fixora',
+        leader: 'AKASH R',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25166'
+      },
+      {
+        email: '727624BCS009@mcet.in',
+        student: '727624BCS009 ANAND S',
+        team: 'HACKOVATORS',
+        leader: 'ANAND S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25179'
+      },
+      {
+        email: '727624BCS012@mcet.in',
+        student: '727624BCS012 ARUN S',
+        team: 'INNO MINDS',
+        leader: 'ARUN S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25192'
+      },
+      {
+        email: '727624BCS014@mcet.in',
+        student: '727624BCS014 ASHWIN S',
+        team: 'INNOVERSE',
+        leader: 'ASHWIN S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25205'
+      },
+      {
+        email: '727624BIT006@mcet.in',
+        student: '727624BIT006 ANAND S',
+        team: 'Innovation exists here',
+        leader: 'ANAND S',
+        phone: '9876543210',
+        dept: 'IT',
+        ps: 'SIH25154'
+      },
+      {
+        email: '727624BCS016@mcet.in',
+        student: '727624BCS016 BALAJI S',
+        team: 'Neurobytes',
+        leader: 'BALAJI S',
+        phone: '9876543210',
+        dept: 'AIML',
+        ps: 'SIH25218'
+      },
+      {
+        email: '727624BCS018@mcet.in',
+        student: '727624BCS018 BHARATH S',
+        team: 'PATHMARKER',
+        leader: 'BHARATH S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25231'
+      },
+      {
+        email: '727624BCS020@mcet.in',
+        student: '727624BCS020 CHANDRU S',
+        team: 'Rocknet',
+        leader: 'CHANDRU S',
+        phone: '9876543210',
+        dept: 'AIML',
+        ps: 'SIH25244'
+      },
+      {
+        email: '727624BCS022@mcet.in',
+        student: '727624BCS022 DEEPAK S',
+        team: 'Sybapsters',
+        leader: 'DEEPAK S',
+        phone: '9876543210',
+        dept: 'AIML',
+        ps: 'SIH25257'
+      },
+      {
+        email: '727624BCS024@mcet.in',
+        student: '727624BCS024 DHANUSH S',
+        team: 'TECH CSE2',
+        leader: 'DHANUSH S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25270'
+      },
+      {
+        email: '727624BIT010@mcet.in',
+        student: '727624BIT010 ARUN S',
+        team: 'TECH HOLICS',
+        leader: 'ARUN S',
+        phone: '9876543210',
+        dept: 'IT',
+        ps: 'SIH25180'
+      },
+      {
+        email: '727624BCS026@mcet.in',
+        student: '727624BCS026 DHARANI S',
+        team: 'TECH NINJAS',
+        leader: 'DHARANI S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25283'
+      },
+      {
+        email: '727624BIT012@mcet.in',
+        student: '727624BIT012 ASHWIN S',
+        team: 'TECH TITANS II',
+        leader: 'ASHWIN S',
+        phone: '9876543210',
+        dept: 'IT',
+        ps: 'SIH25193'
+      },
+      {
+        email: '727624BIT008@mcet.in',
+        student: '727624BIT008 ARUN K',
+        team: 'Team Luna',
+        leader: 'ARUN K',
+        phone: '9876543210',
+        dept: 'IT',
+        ps: 'SIH25167'
+      },
+      {
+        email: '727624BIT014@mcet.in',
+        student: '727624BIT014 BALAJI S',
+        team: 'Tech Trojans',
+        leader: 'BALAJI S',
+        phone: '9876543210',
+        dept: 'IT',
+        ps: 'SIH25206'
+      },
+      {
+        email: '727624BCS028@mcet.in',
+        student: '727624BCS028 DINESH S',
+        team: 'Technotitans',
+        leader: 'DINESH S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25296'
+      },
+      {
+        email: '727624BIT016@mcet.in',
+        student: '727624BIT016 BHARATH S',
+        team: 'Technode',
+        leader: 'BHARATH S',
+        phone: '9876543210',
+        dept: 'IT',
+        ps: 'SIH25219'
+      },
+      {
+        email: '727624BCS030@mcet.in',
+        student: '727624BCS030 GOKUL S',
+        team: 'Techsparks',
+        leader: 'GOKUL S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25309'
+      },
+      {
+        email: '727624BCS032@mcet.in',
+        student: '727624BCS032 HARI S',
+        team: 'The Daltons',
+        leader: 'HARI S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25322'
+      },
+      {
+        email: '727624BCS034@mcet.in',
+        student: '727624BCS034 HARISH S',
+        team: 'Thinkbuye',
+        leader: 'HARISH S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25335'
+      },
+      {
+        email: '727624BCS036@mcet.in',
+        student: '727624BCS036 JAYASURYA S',
+        team: 'TRACKGUARDIAN',
+        leader: 'JAYASURYA S',
+        phone: '9876543210',
+        dept: 'CSE',
+        ps: 'SIH25348'
+      },
+      {
+        email: '727623BAU001@mcet.in',
+        student: '727623BAU001 ABISHEK S',
+        team: 'Ankers Auto',
+        leader: 'ABISHEK S',
+        phone: '9876543210',
+        dept: 'AUTO',
+        ps: 'SIH25198'
+      },
+      {
+        email: '727622BVL001@mcet.in',
+        student: '727622BVL001 ABISHEK S',
+        team: 'Aura',
+        leader: 'ABISHEK S',
+        phone: '9876543210',
+        dept: 'VLSI',
+        ps: 'SIH25199'
+      },
+      {
+        email: '727622BVL002@mcet.in',
+        student: '727622BVL002 AKASH S',
+        team: 'Axion',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'VLSI',
+        ps: 'SIH25212'
+      },
+      {
+        email: '727622BVL003@mcet.in',
+        student: '727622BVL003 ANAND S',
+        team: 'Bug Busters',
+        leader: 'ANAND S',
+        phone: '9876543210',
+        dept: 'VLSI',
+        ps: 'SIH25225'
+      },
+      {
+        email: '727623BCY001@mcet.in',
+        student: '727623BCY001 ABISHEK S',
+        team: 'Clarentzz',
+        leader: 'ABISHEK S',
+        phone: '9876543210',
+        dept: 'CYS',
+        ps: 'SIH25200'
+      },
+      {
+        email: '727623BCA001@mcet.in',
+        student: '727623BCA001 ABISHEK S',
+        team: 'Code zone1',
+        leader: 'ABISHEK S',
+        phone: '9876543210',
+        dept: 'MCA',
+        ps: 'SIH25201'
+      },
+      {
+        email: '727623BCA002@mcet.in',
+        student: '727623BCA002 AKASH S',
+        team: 'Codex1',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'MCA',
+        ps: 'SIH25214'
+      },
+      {
+        email: '727623BAU002@mcet.in',
+        student: '727623BAU002 AKASH S',
+        team: 'G-Spark Auto',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'AUTO',
+        ps: 'SIH25211'
+      },
+      {
+        email: '727622BVL004@mcet.in',
+        student: '727622BVL004 ARUN S',
+        team: 'Greenguardians',
+        leader: 'ARUN S',
+        phone: '9876543210',
+        dept: 'VLSI',
+        ps: 'SIH25238'
+      },
+      {
+        email: '727623BCY002@mcet.in',
+        student: '727623BCY002 AKASH S',
+        team: 'HACKHARMONY',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'CYS',
+        ps: 'SIH25213'
+      },
+      {
+        email: '727623BCA003@mcet.in',
+        student: '727623BCA003 ANAND S',
+        team: 'Hackaholics',
+        leader: 'ANAND S',
+        phone: '9876543210',
+        dept: 'MCA',
+        ps: 'SIH25227'
+      },
+      {
+        email: '727622BVL005@mcet.in',
+        student: '727622BVL005 ASHWIN S',
+        team: 'Inno Minds',
+        leader: 'ASHWIN S',
+        phone: '9876543210',
+        dept: 'VLSI',
+        ps: 'SIH25251'
+      },
+      {
+        email: '727622BVL006@mcet.in',
+        student: '727622BVL006 BALAJI S',
+        team: 'Inno Vengers',
+        leader: 'BALAJI S',
+        phone: '9876543210',
+        dept: 'VLSI',
+        ps: 'SIH25264'
+      },
+      {
+        email: '727622BME001@mcet.in',
+        student: '727622BME001 ABISHEK S',
+        team: 'Innovex 25',
+        leader: 'ABISHEK S',
+        phone: '9876543210',
+        dept: 'MECH',
+        ps: 'SIH25202'
+      },
+      {
+        email: '727623BCY003@mcet.in',
+        student: '727623BCY003 ANAND S',
+        team: 'MIND_MASTERS',
+        leader: 'ANAND S',
+        phone: '9876543210',
+        dept: 'CYS',
+        ps: 'SIH25226'
+      },
+      {
+        email: '727622BME002@mcet.in',
+        student: '727622BME002 AKASH S',
+        team: 'Mechbharatinnovators',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'MECH',
+        ps: 'SIH25215'
+      },
+      {
+        email: '727623BCA004@mcet.in',
+        student: '727623BCA004 ARUN S',
+        team: 'Nexus 1',
+        leader: 'ARUN S',
+        phone: '9876543210',
+        dept: 'MCA',
+        ps: 'SIH25240'
+      },
+      {
+        email: '727623BCE001@mcet.in',
+        student: '727623BCE001 ABISHEK S',
+        team: 'Ruled Out',
+        leader: 'ABISHEK S',
+        phone: '9876543210',
+        dept: 'CIVIL',
+        ps: 'SIH25203'
+      },
+      {
+        email: '727623BCA005@mcet.in',
+        student: '727623BCA005 ASHWIN S',
+        team: 'Shecodes1',
+        leader: 'ASHWIN S',
+        phone: '9876543210',
+        dept: 'MCA',
+        ps: 'SIH25253'
+      },
+      {
+        email: '727622BVL007@mcet.in',
+        student: '727622BVL007 BHARATH S',
+        team: 'Silicon Squad',
+        leader: 'BHARATH S',
+        phone: '9876543210',
+        dept: 'VLSI',
+        ps: 'SIH25277'
+      },
+      {
+        email: '727623BCY004@mcet.in',
+        student: '727623BCY004 ARUN S',
+        team: 'Straw_hats',
+        leader: 'ARUN S',
+        phone: '9876543210',
+        dept: 'CYS',
+        ps: 'SIH25239'
+      },
+      {
+        email: '727623BCE002@mcet.in',
+        student: '727623BCE002 AKASH S',
+        team: 'Strawhats',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'CIVIL',
+        ps: 'SIH25216'
+      },
+      {
+        email: '727623BAU003@mcet.in',
+        student: '727623BAU003 ANAND S',
+        team: 'Synergy Auto',
+        leader: 'ANAND S',
+        phone: '9876543210',
+        dept: 'AUTO',
+        ps: 'SIH25224'
+      },
+      {
+        email: '727623BCA006@mcet.in',
+        student: '727623BCA006 BALAJI S',
+        team: 'TEAM BUG BUSTERS',
+        leader: 'BALAJI S',
+        phone: '9876543210',
+        dept: 'MCA',
+        ps: 'SIH25266'
+      },
+      {
+        email: '727622BVL008@mcet.in',
+        student: '727622BVL008 DHARSHAN K',
+        team: 'Team Dharshan.K VLSI',
+        leader: 'DHARSHAN K',
+        phone: '9876543210',
+        dept: 'VLSI',
+        ps: 'SIH25290'
+      },
+      {
+        email: '727623BAU004@mcet.in',
+        student: '727623BAU004 ARUN S',
+        team: 'Team Tenacity',
+        leader: 'ARUN S',
+        phone: '9876543210',
+        dept: 'AUTO',
+        ps: 'SIH25237'
+      },
+      {
+        email: '727623BCY005@mcet.in',
+        student: '727623BCY005 ASHWIN S',
+        team: 'Tech Creators',
+        leader: 'ASHWIN S',
+        phone: '9876543210',
+        dept: 'CYS',
+        ps: 'SIH25252'
+      },
+      {
+        email: '727623BCE003@mcet.in',
+        student: '727623BCE003 ANAND S',
+        team: 'Tech Cilians',
+        leader: 'ANAND S',
+        phone: '9876543210',
+        dept: 'CIVIL',
+        ps: 'SIH25229'
+      },
+      {
+        email: '727623BCA007@mcet.in',
+        student: '727623BCA007 BHARATH S',
+        team: 'Tech falcon1',
+        leader: 'BHARATH S',
+        phone: '9876543210',
+        dept: 'MCA',
+        ps: 'SIH25279'
+      },
+      {
+        email: '727623BAU005@mcet.in',
+        student: '727623BAU005 ASHWIN S',
+        team: 'Tech Shori',
+        leader: 'ASHWIN S',
+        phone: '9876543210',
+        dept: 'AUTO',
+        ps: 'SIH25250'
+      },
+      {
+        email: '727623BCA008@mcet.in',
+        student: '727623BCA008 CHANDRU S',
+        team: 'TycoonSquard1',
+        leader: 'CHANDRU S',
+        phone: '9876543210',
+        dept: 'MCA',
+        ps: 'SIH25292'
+      },
+      {
+        email: '727623BEE001@mcet.in',
+        student: '727623BEE001 ABISHEK S',
+        team: 'Automators',
+        leader: 'ABISHEK S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25195'
+      },
+      {
+        email: '727622BEC001@mcet.in',
+        student: '727622BEC001 ABISHEK S',
+        team: 'Binary brains',
+        leader: 'ABISHEK S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25196'
+      },
+      {
+        email: '727622BEC002@mcet.in',
+        student: '727622BEC002 AKASH S',
+        team: 'Blossoms',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25209'
+      },
+      {
+        email: '727623BEE002@mcet.in',
+        student: '727623BEE002 AKASH S',
+        team: 'Blue Print',
+        leader: 'AKASH S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25208'
+      },
+      {
+        email: '727622BEC003@mcet.in',
+        student: '727622BEC003 ANAND S',
+        team: 'Bug Hunters',
+        leader: 'ANAND S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25222'
+      },
+      {
+        email: '727622BEC004@mcet.in',
+        student: '727622BEC004 ARUN S',
+        team: 'Capcitive minds',
+        leader: 'ARUN S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25235'
+      },
+      {
+        email: '727623BEE003@mcet.in',
+        student: '727623BEE003 ANAND S',
+        team: 'Celestial 6',
+        leader: 'ANAND S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25221'
+      },
+      {
+        email: '727622BEC005@mcet.in',
+        student: '727622BEC005 ASHWIN S',
+        team: 'Code Beast',
+        leader: 'ASHWIN S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25248'
+      },
+      {
+        email: '727622BEC006@mcet.in',
+        student: '727622BEC006 BALAJI S',
+        team: 'Data Drifters',
+        leader: 'BALAJI S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25261'
+      },
+      {
+        email: '727622BEC007@mcet.in',
+        student: '727622BEC007 BHARATH S',
+        team: 'E.d.ith',
+        leader: 'BHARATH S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25274'
+      },
+      {
+        email: '727623BEE004@mcet.in',
+        student: '727623BEE004 ARUN S',
+        team: 'Electro Titans_MT',
+        leader: 'ARUN S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25234'
+      },
+      {
+        email: '727623BEE005@mcet.in',
+        student: '727623BEE005 ASHWIN S',
+        team: 'G6',
+        leader: 'ASHWIN S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25247'
+      },
+      {
+        email: '727622BEC008@mcet.in',
+        student: '727622BEC008 CHANDRU S',
+        team: 'Gryffindors',
+        leader: 'CHANDRU S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25287'
+      },
+      {
+        email: '727622BEC009@mcet.in',
+        student: '727622BEC009 DEEPAK S',
+        team: 'Hack Havoc',
+        leader: 'DEEPAK S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25300'
+      },
+      {
+        email: '727623BEE006@mcet.in',
+        student: '727623BEE006 BALAJI S',
+        team: 'Hackaholics',
+        leader: 'BALAJI S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25260'
+      },
+      {
+        email: '727622BEC010@mcet.in',
+        student: '727622BEC010 DHANUSH S',
+        team: 'Hackowants - Karthick srujan',
+        leader: 'DHANUSH S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25313'
+      },
+      {
+        email: '727623BEE007@mcet.in',
+        student: '727623BEE007 BHARATH S',
+        team: 'Hacksix',
+        leader: 'BHARATH S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25273'
+      },
+      {
+        email: '727622BEC011@mcet.in',
+        student: '727622BEC011 DHARANI S',
+        team: 'Hexals',
+        leader: 'DHARANI S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25326'
+      },
+      {
+        email: '727622BEC012@mcet.in',
+        student: '727622BEC012 DINESH S',
+        team: 'Logic lords',
+        leader: 'DINESH S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25339'
+      },
+      {
+        email: '727622BEC013@mcet.in',
+        student: '727622BEC013 GOKUL S',
+        team: 'PIXEL pioneers',
+        leader: 'GOKUL S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25352'
+      },
+      {
+        email: '727623BEE008@mcet.in',
+        student: '727623BEE008 CHANDRU S',
+        team: 'Rough Paths',
+        leader: 'CHANDRU S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25286'
+      },
+      {
+        email: '727622BEC014@mcet.in',
+        student: '727622BEC014 HARI S',
+        team: 'Source Sages',
+        leader: 'HARI S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25365'
+      },
+      {
+        email: '727623BEE009@mcet.in',
+        student: '727623BEE009 DEEPAK S',
+        team: 'Spark Innovators',
+        leader: 'DEEPAK S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25299'
+      },
+      {
+        email: '727623BEE010@mcet.in',
+        student: '727623BEE010 DHANUSH S',
+        team: 'Spectra',
+        leader: 'DHANUSH S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25312'
+      },
+      {
+        email: '727622BEC015@mcet.in',
+        student: '727622BEC015 HARISH S',
+        team: 'Synersix',
+        leader: 'HARISH S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25378'
+      },
+      {
+        email: '727623BEE011@mcet.in',
+        student: '727623BEE011 DHARANI S',
+        team: 'Team Jagadhesan B(EEE)',
+        leader: 'DHARANI S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25325'
+      },
+      {
+        email: '727622BEC016@mcet.in',
+        student: '727622BEC016 JAYASURYA S',
+        team: 'Team Katsuki',
+        leader: 'JAYASURYA S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25391'
+      },
+      {
+        email: '727622BEC017@mcet.in',
+        student: '727622BEC017 JEEVA S',
+        team: 'Tech innovators',
+        leader: 'JEEVA S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25404'
+      },
+      {
+        email: '727622BEC018@mcet.in',
+        student: '727622BEC018 KAMALESH S',
+        team: 'Tech Titans',
+        leader: 'KAMALESH S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25417'
+      },
+      {
+        email: '727622BEC019@mcet.in',
+        student: '727622BEC019 KARTHICK S',
+        team: 'Techno Titans',
+        leader: 'KARTHICK S',
+        phone: '9876543210',
+        dept: 'ECE',
+        ps: 'SIH25430'
+      },
+      {
+        email: '727623BEE012@mcet.in',
+        student: '727623BEE012 DINESH S',
+        team: 'The Silicon Stack',
+        leader: 'DINESH S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25338'
+      },
+      {
+        email: '727623BEE013@mcet.in',
+        student: '727623BEE013 GOKUL S',
+        team: 'Thunder Bolts',
+        leader: 'GOKUL S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25351'
+      },
+      {
+        email: '727623BEE014@mcet.in',
+        student: '727623BEE014 HARI S',
+        team: 'Vision Vortex',
+        leader: 'HARI S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25364'
+      },
+      {
+        email: '727623BEE015@mcet.in',
+        student: '727623BEE015 HARISH S',
+        team: 'Warriors',
+        leader: 'HARISH S',
+        phone: '9876543210',
+        dept: 'EEE',
+        ps: 'SIH25377'
+      }
+    ];
+
+    // Initialize registrations from static list (chunked approach)
+    (function preloadRegistrations() {
+      try {
+        const list = STATIC_REG_LIST;
+        window.__REG_LIST__ = list;
+        window.__REG_MAP__ = buildRegMap(list);
+      } catch (e) {
+        window.__REG_LIST__ = [];
+        window.__REG_MAP__ = new Map();
+      }
+    })();
     // Helpers
     function toMinutes(hhmm) {
       const [h, m] = hhmm.split(":").map(Number);
@@ -379,7 +3098,46 @@
         const tr = document.createElement('tr');
 
         const tdSno = document.createElement('td');
-        tdSno.textContent = String(idx + 1);
+        const snoCell = document.createElement('div');
+        snoCell.className = 'sno-cell';
+        const snoNum = document.createElement('span');
+        snoNum.textContent = idx + 1;
+        const icons = document.createElement('div');
+        icons.className = 'sno-icons';
+
+        const { completed, selected } = getStatus(r);
+
+        const iconC = document.createElement('span');
+        iconC.className = 'status-icon completed' + (completed ? ' on' : '');
+        iconC.textContent = '✓';
+        iconC.title = 'Mark as Completed';
+        iconC.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const st = getStatus(r);
+          st.completed = !st.completed;
+          setStatus(r, st);
+          applyRowStatus(tr, r);
+          iconC.classList.toggle('on', st.completed);
+        });
+
+        const iconS = document.createElement('span');
+        iconS.className = 'status-icon selected' + (selected ? ' on' : '');
+        iconS.textContent = '★';
+        iconS.title = 'Mark as Selected';
+        iconS.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const st = getStatus(r);
+          st.selected = !st.selected;
+          setStatus(r, st);
+          applyRowStatus(tr, r);
+          iconS.classList.toggle('on', st.selected);
+        });
+
+        icons.appendChild(iconC);
+        icons.appendChild(iconS);
+        snoCell.appendChild(snoNum);
+        snoCell.appendChild(icons);
+        tdSno.appendChild(snoCell);
 
         const tdId = document.createElement('td');
         tdId.textContent = r.id;
@@ -389,6 +3147,29 @@
 
         const tdName = document.createElement('td');
         tdName.textContent = r.name;
+
+        // Registration match (by team name + dept)
+        let reg = null;
+        if (r.dept && r.dept !== '—' && r.name && r.name !== 'Open Slot' && r.name !== 'Reserved Slot') {
+          const k = makeKey(r.dept, r.name);
+          reg = (window.__REG_MAP__ && window.__REG_MAP__.get) ? window.__REG_MAP__.get(k) : null;
+          // Fallback: try relaxed name (remove spaces & special chars)
+          if (!reg) {
+            const relaxed = makeKey(r.dept, (r.name || '').replace(/\s+/g,'').replace(/[_-]/g,''));
+            reg = (window.__REG_MAP__ && window.__REG_MAP__.get) ? window.__REG_MAP__.get(relaxed) : null;
+          }
+        }
+
+        const tdEmail = document.createElement('td');
+        tdEmail.textContent = reg?.email || '—';
+        const tdStudent = document.createElement('td');
+        tdStudent.textContent = reg?.student || '—';
+        const tdLeader = document.createElement('td');
+        tdLeader.textContent = reg?.leader || '—';
+        const tdPhone = document.createElement('td');
+        tdPhone.textContent = reg?.phone || '—';
+        const tdPS = document.createElement('td');
+        tdPS.textContent = reg?.ps || '—';
 
         const tdVenue = document.createElement('td');
         tdVenue.innerHTML = venueBadge(r.venue);
@@ -403,11 +3184,102 @@
         tr.appendChild(tdId);
         tr.appendChild(tdDept);
         tr.appendChild(tdName);
+        tr.appendChild(tdEmail);
+        tr.appendChild(tdStudent);
+        tr.appendChild(tdLeader);
+        tr.appendChild(tdPhone);
+        tr.appendChild(tdPS);
         tr.appendChild(tdVenue);
         tr.appendChild(tdDay);
         tr.appendChild(tdTime);
         tbody.appendChild(tr);
       });
+      // Update unmatched diagnostics panel
+      try { updateUnmatchedPanel(rows); } catch (e) { console.warn('Diag panel update failed', e); }
+    }
+
+    // Diagnostics: list teams with missing registration match (all details are dashes)
+    function updateUnmatchedPanel(rows) {
+      const page = document.querySelector('.page');
+      if (!page) return;
+      let panel = document.getElementById('unmatched-panel');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'unmatched-panel';
+        panel.className = 'panel';
+        const title = document.createElement('h3');
+        title.textContent = 'Unmatched Teams (no registration details)';
+        panel.appendChild(title);
+        const body = document.createElement('div');
+        body.id = 'unmatched-body';
+        body.className = 'hint';
+        panel.appendChild(body);
+        page.insertBefore(panel, document.getElementById('summary'));
+      }
+      const body = document.getElementById('unmatched-body');
+      if (!body) return;
+
+      const order = ['AIDS','AIML','CSE','IT','AUTO','VLSI','MCA','MECH','CYS','CIVIL','EEE','ECE'];
+      const groups = new Map(order.map(d => [d, new Set()]));
+      (rows || []).forEach(r => {
+        if (!r) return;
+        const isTeamRow = r.dept && r.dept !== '—' && r.name && r.name !== 'Open Slot' && r.name !== 'Reserved Slot';
+        if (!isTeamRow) return;
+        const k = makeKey(r.dept, r.name);
+        const has = (window.__REG_MAP__ && window.__REG_MAP__.get) ? window.__REG_MAP__.get(k) : null;
+        if (!has) {
+          if (!groups.has(r.dept)) groups.set(r.dept, new Set());
+          groups.get(r.dept).add(r.name);
+        }
+      });
+
+      // Build content
+      let html = '';
+      order.forEach(d => {
+        const set = groups.get(d);
+        if (set && set.size) {
+          html += `<div style="margin:6px 0;"><b>${d} (${set.size})</b><br>`;
+          html += Array.from(set).sort((a,b)=>a.localeCompare(b)).map(n => `• ${n}`).join('<br>');
+          html += '</div>';
+        }
+      });
+      if (!html) html = 'All scheduled teams have matched registration details.';
+      body.innerHTML = html;
+    }
+
+    // Build a department-wise map of unmatched teams from currentRows
+    function buildUnmatchedMap() {
+      const order = ['AIDS','AIML','CSE','IT','AUTO','VLSI','MCA','MECH','CYS','CIVIL','EEE','ECE'];
+      const groups = new Map(order.map(d => [d, new Set()]));
+      (currentRows || []).forEach(r => {
+        if (!r) return;
+        const isTeamRow = r.dept && r.dept !== '—' && r.name && r.name !== 'Open Slot' && r.name !== 'Reserved Slot';
+        if (!isTeamRow) return;
+        const k = makeKey(r.dept, r.name);
+        const has = (window.__REG_MAP__ && window.__REG_MAP__.get) ? window.__REG_MAP__.get(k) : null;
+        if (!has) {
+          if (!groups.has(r.dept)) groups.set(r.dept, new Set());
+          groups.get(r.dept).add(r.name);
+        }
+      });
+      return groups;
+    }
+
+    // Produce a plain text report for clipboard
+    function getUnmatchedReport() {
+      const order = ['AIDS','AIML','CSE','IT','AUTO','VLSI','MCA','MECH','CYS','CIVIL','EEE','ECE'];
+      const groups = buildUnmatchedMap();
+      let lines = [];
+      order.forEach(d => {
+        const set = groups.get(d);
+        if (set && set.size) {
+          lines.push(`${d} (${set.size})`);
+          Array.from(set).sort((a,b)=>a.localeCompare(b)).forEach(n => lines.push(`- ${n}`));
+          lines.push('');
+        }
+      });
+      if (!lines.length) return 'All scheduled teams have matched registration details.';
+      return lines.join('\n');
     }
 
     function applySort() {
@@ -438,12 +3310,146 @@
           cmpStr(a.venue, b.venue) ||
           (a.originalIndex - b.originalIndex)
         );
+      } else if (mode === 'completed') {
+        rows.sort((a, b) => {
+          const ac = getStatus(a).completed ? 1 : 0;
+          const bc = getStatus(b).completed ? 1 : 0;
+          return (bc - ac) || (DAY_ORDER[a.day] - DAY_ORDER[b.day]) || (a.startMin - b.startMin) || cmpStr(a.venue, b.venue) || cmpStr(a.dept, b.dept) || (a.originalIndex - b.originalIndex);
+        });
+      } else if (mode === 'selected') {
+        rows.sort((a, b) => {
+          const as = getStatus(a).selected ? 1 : 0;
+          const bs = getStatus(b).selected ? 1 : 0;
+          return (bs - as) || (DAY_ORDER[a.day] - DAY_ORDER[b.day]) || (a.startMin - b.startMin) || cmpStr(a.venue, b.venue) || cmpStr(a.dept, b.dept) || (a.originalIndex - b.originalIndex);
+        });
       } else {
         // original
         rows.sort((a, b) => a.originalIndex - b.originalIndex);
       }
       currentRows = rows;
       renderRows(currentRows);
+    }
+
+    // Status persistence and helpers (Published JSON in HTML + local draft)
+    const STATUS_KEY = 'schedule_status_map_v1';
+    let __STATUS_MAP__ = loadStatusMap();
+
+    function statusKey(r) { return makeKey(r.dept, r.name); }
+    function readPublishedStatusObj() {
+      try {
+        const el = document.getElementById('published-status');
+        if (!el) return null;
+        const txt = (el.textContent || '').trim();
+        if (!txt) return {};
+        return JSON.parse(txt);
+      } catch { return {}; }
+    }
+    function loadStatusMap() {
+      // Base: published (shared)
+      const published = readPublishedStatusObj() || {};
+      const base = new Map(Object.entries(published));
+      // Overlay: local draft (only for current browser)
+      try {
+        const raw = localStorage.getItem(STATUS_KEY);
+        if (raw) {
+          const draft = JSON.parse(raw);
+          for (const [k, v] of Object.entries(draft)) base.set(k, v);
+        }
+      } catch {}
+      return base;
+    }
+    function saveStatusMap() {
+      try {
+        const obj = Object.fromEntries(__STATUS_MAP__);
+        localStorage.setItem(STATUS_KEY, JSON.stringify(obj));
+      } catch {}
+    }
+    function getStatus(r) {
+      const k = statusKey(r);
+      const val = __STATUS_MAP__.get(k);
+      if (val) {
+        try { const o = JSON.parse(val); return { completed: !!o.completed, selected: !!o.selected }; } catch {}
+      }
+      return { completed: false, selected: false };
+    }
+    function setStatus(r, { completed, selected }) {
+      const k = statusKey(r);
+      __STATUS_MAP__.set(k, JSON.stringify({ completed: !!completed, selected: !!selected }));
+      saveStatusMap();
+    }
+    function applyRowStatus(tr, r) {
+      const st = getStatus(r);
+      tr.classList.toggle('row-completed', !!st.completed);
+      tr.classList.toggle('row-selected',  !!st.selected);
+    }
+
+    // Publish: embed current status into this HTML and download a new file
+    function publishStatusToFile() {
+      // Update the embedded script content
+      try {
+        const obj = Object.fromEntries(__STATUS_MAP__);
+        const el = document.getElementById('published-status');
+        if (el) el.textContent = JSON.stringify(obj);
+      } catch {}
+      const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'SIH_schedule.published.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // Excel (CSV) export of currentRows respecting current sort
+    function toCSVValue(v) {
+      if (v == null) return '';
+      const s = String(v).replace(/"/g, '""');
+      if (/[",\n]/.test(s)) return '"' + s + '"';
+      return s;
+    }
+    function getRegForRow(r) {
+      try { return window.__REG_MAP__.get(makeKey(r.dept, r.name)) || null; } catch { return null; }
+    }
+    function downloadExcelCSV() {
+      const header = ['S.No','Team ID','Department','Team Name','Email','Student','Leader','Phone','PS/Title','Venue','Day','Time Slot','Completed','Selected'];
+      const lines = [header.map(toCSVValue).join(',')];
+      const mode = (document.getElementById('sort-by')||{}).value;
+      let rowsToExport = [...(currentRows || [])];
+      if (mode === 'completed') {
+        rowsToExport = rowsToExport.filter(r => getStatus(r).completed);
+      } else if (mode === 'selected') {
+        rowsToExport = rowsToExport.filter(r => getStatus(r).selected);
+      }
+      rowsToExport.forEach((r, idx) => {
+        const reg = getRegForRow(r);
+        const st = getStatus(r);
+        const row = [
+          idx + 1,
+          r.id,
+          r.dept,
+          r.name,
+          reg ? reg.email : '',
+          reg ? reg.student : '',
+          reg ? reg.leader : '',
+          reg ? reg.phone : '',
+          reg ? reg.ps : '',
+          r.venue,
+          r.day,
+          `${toHHMM(r.startMin)} - ${toHHMM(r.endMin)}`,
+          st.completed ? 'Yes' : 'No',
+          st.selected ? 'Yes' : 'No'
+        ];
+        lines.push(row.map(toCSVValue).join(','));
+      });
+      const csv = '\uFEFF' + lines.join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'SIH_schedule_export.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     }
 
     // Data
@@ -970,14 +3976,60 @@
 
     // Wire up buttons
     document.getElementById('btn-generate').addEventListener('click', generateSchedule);
-    document.getElementById('btn-print').addEventListener('click', () => {
-      window.print();
+    document.getElementById('btn-registrations').addEventListener('click', () => {
+      window.location.href = 'Final.html';
     });
+    document.getElementById('btn-excel').addEventListener('click', downloadExcelCSV);
+    const btnPublish = document.getElementById('btn-publish-status');
+    if (btnPublish) {
+      btnPublish.addEventListener('click', () => {
+        const ok = confirm('Publish current status into this HTML and download a new file?\nShare/upload the downloaded file so everyone sees the same statuses.');
+        if (ok) publishStatusToFile();
+      });
+    }
     document.getElementById('btn-apply-sort').addEventListener('click', applySort);
     document.getElementById('sort-by').addEventListener('change', (e) => {
       // Auto-apply sort on change for convenience
       applySort();
     });
+    document.getElementById('btn-copy-unmatched').addEventListener('click', async () => {
+      const text = getUnmatchedReport();
+      try {
+        await navigator.clipboard.writeText(text);
+        alert('Unmatched list copied to clipboard');
+      } catch (err) {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        alert('Unmatched list copied to clipboard');
+      }
+    });
+    // Enhance print: if current sort is Completed or Selected, print only those rows
+    (function enhancePrint() {
+      const btn = document.getElementById('btn-print');
+      if (!btn) return;
+      btn.addEventListener('click', (e) => {
+        const mode = document.getElementById('sort-by').value;
+        const body = document.body;
+        if (mode === 'completed') {
+          body.classList.add('printing-completed-only');
+        } else if (mode === 'selected') {
+          body.classList.add('printing-selected-only');
+        }
+        setTimeout(() => {
+          window.print();
+          body.classList.remove('printing-completed-only');
+          body.classList.remove('printing-selected-only');
+        }, 0);
+      });
+    })();
+
+    // Static mode: no loader hint panel
+    (function showRegHint() { /* no-op */ })();
 
     // Initial render
     generateSchedule();
