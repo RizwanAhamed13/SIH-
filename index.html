@@ -3647,7 +3647,18 @@
         const tdLeader = document.createElement('td');
         tdLeader.textContent = reg?.leader || '—';
         const tdPhone = document.createElement('td');
-        tdPhone.textContent = reg?.phone || '—';
+        const rawPhone = reg?.phone || '';
+        if (rawPhone) {
+          const tel = String(rawPhone).replace(/[^0-9+]/g, '');
+          const a = document.createElement('a');
+          a.href = `tel:${tel}`;
+          a.textContent = rawPhone;
+          a.className = 'phone-link';
+          a.title = 'Call this number';
+          tdPhone.appendChild(a);
+        } else {
+          tdPhone.textContent = '—';
+        }
         const tdPS = document.createElement('td');
         tdPS.textContent = reg?.ps || '—';
 
